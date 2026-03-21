@@ -8,6 +8,8 @@ This directory contains the deployment artifacts for the MCP platform core servi
 
 ## Files
 
+- `../../docker-compose.yaml`
+  - root convenience entrypoint for public-repo Coolify imports; mirrors the combined core stack
 - `mcp-platform-core.compose.yaml`
   - preferred import path for a single Coolify-managed core stack
 - `mcp-platform-db.compose.yaml`
@@ -24,7 +26,9 @@ This directory contains the deployment artifacts for the MCP platform core servi
   - registry-image variant of the edge service
 ## Recommended Import Mode
 
-Prefer `mcp-platform-core.compose.yaml` when importing this repository into Coolify.
+Prefer the repository-root `docker-compose.yaml` when importing this repository into Coolify as a public repo-backed application.
+
+Use `mcp-platform-core.compose.yaml` when you want the explicit deployment artifact path instead of the root convenience file.
 
 That keeps the platform database, control plane, and edge in one discoverable core stack while still allowing the control plane to create per-tenant Coolify services dynamically.
 

@@ -40,6 +40,7 @@ Implemented runtime capabilities now include:
 │   ├── domain/
 │   └── edge/
 ├── control-plane.env.example
+├── docker-compose.yaml
 ├── edge.env.example
 ├── platform-db.env.example
 ├── go.mod
@@ -53,6 +54,7 @@ The most important public runtime contract sources are:
 - `edge.env.example`
 - `control-plane.env.example`
 - `platform-db.env.example`
+- `docker-compose.yaml`
 - `deploy/coolify/README.md`
 - `deploy/coolify/*.compose.yaml`
 - `deploy/coolify/*.image.compose.yaml`
