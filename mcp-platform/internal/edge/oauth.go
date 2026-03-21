@@ -29,15 +29,15 @@ const (
 )
 
 type OAuthService struct {
-	logger           zerolog.Logger
-	publicBaseURL    string
-	operatorToken    string
-	serviceScopes    []string
-	grants           GrantAuthorizer
-	browserAuth      *AuthRuntime
-	stateStore       edgeStateStore
-	manager          *manage.Manager
-	server           *oauth2server.Server
+	logger        zerolog.Logger
+	publicBaseURL string
+	operatorToken string
+	serviceScopes []string
+	grants        GrantAuthorizer
+	browserAuth   *AuthRuntime
+	stateStore    edgeStateStore
+	manager       *manage.Manager
+	server        *oauth2server.Server
 }
 
 type registeredClient struct {
@@ -122,15 +122,15 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, entries []catalog.Servic
 	})
 
 	return &OAuthService{
-		logger:           logger,
-		publicBaseURL:    strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
-		operatorToken:    operatorToken,
-		serviceScopes:    serviceScopes,
-		grants:           grants,
-		browserAuth:      browserAuth,
-		stateStore:       stateStore,
-		manager:          manager,
-		server:           srv,
+		logger:        logger,
+		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
+		operatorToken: operatorToken,
+		serviceScopes: serviceScopes,
+		grants:        grants,
+		browserAuth:   browserAuth,
+		stateStore:    stateStore,
+		manager:       manager,
+		server:        srv,
 	}, nil
 }
 

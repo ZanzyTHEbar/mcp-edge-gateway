@@ -44,7 +44,7 @@ type AuthRuntime struct {
 	sessionTTL      time.Duration
 	pendingLoginTTL time.Duration
 	stateStore      edgeStateStore
-	authenticator delegatedLoginAuthenticator
+	authenticator   delegatedLoginAuthenticator
 }
 
 type delegatedLoginAuthenticator interface {

@@ -16,7 +16,7 @@ import (
 func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath string, insecureSkipVerify bool, logger zerolog.Logger) *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
-		Transport: newEdgeTransport(insecureSkipVerify),
+		Transport:     newEdgeTransport(insecureSkipVerify),
 	}
 	proxy.Rewrite = func(req *httputil.ProxyRequest) {
 		req.SetURL(target)

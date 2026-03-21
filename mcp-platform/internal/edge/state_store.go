@@ -112,11 +112,11 @@ func newMemoryEdgeStateStore() (*memoryEdgeStateStore, error) {
 		return nil, err
 	}
 	return &memoryEdgeStateStore{
-		clientStore:    oauth2store.NewClientStore(),
-		tokenStore:     tokenStore,
-		pendingLogins:  make(map[string]pendingLogin),
-		sessions:       make(map[string]browserSession),
-		subjects:       make(map[string]IdentityClaims),
+		clientStore:   oauth2store.NewClientStore(),
+		tokenStore:    tokenStore,
+		pendingLogins: make(map[string]pendingLogin),
+		sessions:      make(map[string]browserSession),
+		subjects:      make(map[string]IdentityClaims),
 	}, nil
 }
 
@@ -289,10 +289,10 @@ func (s *memoryEdgeStateStore) Close() error {
 	return nil
 }
 
-func (c confidentialClient) GetID() string { return c.id }
+func (c confidentialClient) GetID() string     { return c.id }
 func (c confidentialClient) GetSecret() string { return "" }
 func (c confidentialClient) GetDomain() string { return c.domain }
-func (c confidentialClient) IsPublic() bool { return false }
+func (c confidentialClient) IsPublic() bool    { return false }
 func (c confidentialClient) GetUserID() string { return c.userID }
 
 func (c confidentialClient) VerifyPassword(secret string) bool {

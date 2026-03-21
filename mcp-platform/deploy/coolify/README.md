@@ -1,6 +1,6 @@
 # Coolify Deployment Artifacts
 
-This directory contains the deployment artifacts for the DragonServer MCP platform core services:
+This directory contains the deployment artifacts for the MCP platform core services:
 
 - `mcp-platform-db`
 - `mcp-control-plane`
@@ -22,9 +22,6 @@ This directory contains the deployment artifacts for the DragonServer MCP platfo
   - registry-image variant of the control-plane service
 - `mcp-edge.image.compose.yaml`
   - registry-image variant of the edge service
-- `DRAGONSERVER_ROLLOUT_PLAN.md`
-  - controlled mutation order, validation gates, and rollback notes
-
 ## Recommended Import Mode
 
 Prefer `mcp-platform-core.compose.yaml` when importing this repository into Coolify.
@@ -58,6 +55,8 @@ Use:
 This mode requires prebuilt images in a registry reachable by Coolify.
 
 If the runtime source is not currently available to Coolify as a git repository, registry-image mode is the correct deployment path.
+
+Keep environment-specific rollout procedures, live hostnames, and operational identifiers in a private operations repository instead of this public runtime source tree.
 
 ## Runtime Assumptions
 

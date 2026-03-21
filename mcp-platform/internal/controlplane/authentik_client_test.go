@@ -27,6 +27,8 @@ func TestAuthentikClientBuildGrantSnapshot(t *testing.T) {
 			})
 		case "/token":
 			tokenCalls++
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, authentikAPIScope, r.Form.Get("scope"))
 			writeTestJSON(t, w, map[string]any{
 				"access_token": "authentik-token",
 				"token_type":   "Bearer",
@@ -128,6 +130,8 @@ func TestAuthentikClientBuildGrantSnapshotSkipsMalformedRecordsAndUnknownMapping
 				"jwks_uri":               server.URL + "/keys",
 			})
 		case "/token":
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, authentikAPIScope, r.Form.Get("scope"))
 			writeTestJSON(t, w, map[string]any{
 				"access_token": "authentik-token",
 				"token_type":   "Bearer",
@@ -240,6 +244,8 @@ func TestAuthentikClientIncludesResponseBodyInHTTPStatusErrors(t *testing.T) {
 				"jwks_uri":               server.URL + "/keys",
 			})
 		case "/token":
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, authentikAPIScope, r.Form.Get("scope"))
 			writeTestJSON(t, w, map[string]any{
 				"access_token": "authentik-token",
 				"token_type":   "Bearer",

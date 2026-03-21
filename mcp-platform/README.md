@@ -1,8 +1,8 @@
 # MCP Platform Runtime
 
-This module contains the production Go runtime for the DragonServer MCP platform.
+This repository contains the production Go runtime for a shared MCP edge and control plane deployment.
 
-It is intentionally separate from the higher-level design documents in `../mcp-control-plane/`, which remain the product and architecture source of truth.
+Product strategy, architecture decision records, and environment-specific operator runbooks are intentionally kept outside this public runtime repository.
 
 ## Current Runtime Surface
 
@@ -25,36 +25,39 @@ Implemented runtime capabilities now include:
 ## Repository Layout
 
 ```text
-mcp-platform/
-  cmd/
-    mcp-edge/
-    mcp-control-plane/
-  db/
-    migrations/
-  deploy/
-    coolify/
-  internal/
-    catalog/
-    contracts/
-    controlplane/
-    domain/
-    edge/
-  control-plane.env.example
-  edge.env.example
-  platform-db.env.example
-  go.mod
-  README.md
+.
+├── cmd/
+│   ├── mcp-edge/
+│   └── mcp-control-plane/
+├── db/
+│   └── migrations/
+├── deploy/
+│   └── coolify/
+├── internal/
+│   ├── catalog/
+│   ├── contracts/
+│   ├── controlplane/
+│   ├── domain/
+│   └── edge/
+├── control-plane.env.example
+├── edge.env.example
+├── platform-db.env.example
+├── go.mod
+└── README.md
 ```
 
 ## Runtime Contracts
 
-The most important operator-facing contract sources are:
+The most important public runtime contract sources are:
 
-- `../mcp-control-plane/IMPLEMENTATION_CONTRACTS.md`
-- `../mcp-control-plane/BATCH0_RUNTIME_BASELINE.md`
 - `edge.env.example`
 - `control-plane.env.example`
 - `platform-db.env.example`
+- `deploy/coolify/README.md`
+- `deploy/coolify/*.compose.yaml`
+- `deploy/coolify/*.image.compose.yaml`
+
+Environment-specific rollout plans, live identifiers, and private service audits should live in a separate private operations repository.
 
 ## Validation
 
@@ -77,11 +80,11 @@ Completed hardening in this module now includes:
 - softer Authentik snapshot ingestion for malformed rows and unknown service-group mappings
 - improved reconcile summary accounting and better upstream HTTP error detail for Authentik, Infisical, and Coolify failures
 
-Remaining pre-rollout work is now packaging-oriented:
+Remaining rollout work is now packaging-oriented:
 
 - local artifact validation
-- deployment-readiness review against live dependencies
-- controlled live rollout planning
+- deployment-readiness review against target dependencies
+- environment-specific rollout execution
 
 ## Implementation Directive
 

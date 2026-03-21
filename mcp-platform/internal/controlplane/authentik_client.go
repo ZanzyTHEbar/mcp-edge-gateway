@@ -20,6 +20,8 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 )
 
+const authentikAPIScope = "goauthentik.io/api"
+
 type AuthentikClient struct {
 	logger       zerolog.Logger
 	issuerURL    string
@@ -356,6 +358,7 @@ func (c *AuthentikClient) ensureTokenSource(ctx context.Context) (oauth2.TokenSo
 		ClientID:     c.clientID,
 		ClientSecret: c.clientSecret,
 		TokenURL:     endpoint.TokenURL,
+		Scopes:       []string{authentikAPIScope},
 	}
 	c.tokenSource = oauthConfig.TokenSource(ctx)
 	return c.tokenSource, nil
