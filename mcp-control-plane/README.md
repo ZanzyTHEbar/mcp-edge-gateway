@@ -31,6 +31,10 @@ with a single, consistent platform model:
   - Canonical naming, secret-path, env-surface, and rollout-contract rules for the live runtime.
 - `BATCH0_RUNTIME_BASELINE.md`
   - Frozen live-runtime facts gathered before implementation.
+- `ACTUAL_MCP_SOURCE_AUDIT.md`
+  - Verified upstream and runtime lineage for `actualbudget-mcp` / `actual-mcp-server` (Coolify on `cool-res`).
+- `DRAGONSERVER_RUNTIME_ROLLOUT.md`
+  - Private live rollout inputs, fixed Coolify identifiers, secret-mount state, and the remaining execution order.
 
 ## Final Design Snapshot
 
@@ -93,4 +97,4 @@ Before live DragonServer mutation work begins, the runtime contract now assumes:
 3. Infisical is deployed and holds the platform secret paths defined in `IMPLEMENTATION_CONTRACTS.md`.
 4. Authentik has the MCP control-plane provider/app configuration plus the MCP entitlement groups.
 5. The env examples in `../mcp-platform/*.env.example` are the source templates for deployment configuration.
-6. Coolify deployment definitions now exist under `../mcp-platform/deploy/coolify/`, but the final local artifact validation pass and live cutover plan still need to be completed before any mutation window.
+6. Coolify deployment definitions now exist in the public runtime repository at `https://github.com/ZanzyTHEbar/dragonserver-mcp-platform-runtime` under `deploy/coolify/`, but the final live cutover plan still needs to be executed from the private operator docs before any mutation window.
