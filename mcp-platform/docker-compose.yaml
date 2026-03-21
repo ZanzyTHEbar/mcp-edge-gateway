@@ -24,7 +24,7 @@ services:
       start_period: 20s
     volumes:
       - mcp-platform-db-data:/var/lib/postgresql/data
-      - ${MCP_PLATFORM_DB_PASSWORD_HOST_PATH:?set MCP_PLATFORM_DB_PASSWORD_HOST_PATH}:/run/secrets/mcp-platform-db-password:ro
+      - /data/coolify/mcp-platform-secrets/mcp-platform-db-password:/run/secrets/mcp-platform-db-password:ro
     networks:
       - coolify
 
@@ -69,6 +69,8 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET: ${MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
     depends_on:
@@ -103,6 +105,10 @@ services:
       MCP_EDGE_OPERATOR_TOKEN_PATH: /run/secrets/mcp-edge-operator-token
       MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
     depends_on:

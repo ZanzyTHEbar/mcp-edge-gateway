@@ -83,21 +83,21 @@ Use these files as the operator source templates for environment values:
 
 These compose files intentionally do not hard-code host bind mounts for secrets.
 
-In Coolify, provide the secret inputs below before the first real deploy:
+These DragonServer deployment artifacts expect the materialized secret files to exist under `/data/coolify/mcp-platform-secrets` on the target resource server before the first real deploy.
 
 `mcp-platform-db`
 
-- set `MCP_PLATFORM_DB_PASSWORD_HOST_PATH` to the host path of the PostgreSQL password file
+- `/data/coolify/mcp-platform-secrets/mcp-platform-db-password`
 
 `mcp-control-plane`
 
-- `/run/secrets/mcp-control-plane-infisical-machine-client-secret`
+- `/data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret`
 
 `mcp-edge`
 
-- `/run/secrets/mcp-edge-authentik-client-secret`
-- `/run/secrets/mcp-edge-operator-token`
-- `/run/secrets/mcp-edge-session-encryption-key`
+- `/data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret`
+- `/data/coolify/mcp-platform-secrets/mcp-edge-operator-token`
+- `/data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key`
 
 ## Secret Source of Truth
 
@@ -113,7 +113,7 @@ The control plane can resolve Infisical path references directly for its platfor
 
 That means the database password must exist in two deployment surfaces:
 
-- as the PostgreSQL password file exposed through `MCP_PLATFORM_DB_PASSWORD_HOST_PATH`
+- as the PostgreSQL password file mounted from `/data/coolify/mcp-platform-secrets/mcp-platform-db-password`
 - as the password embedded inside `MCP_PLATFORM_DATABASE_URL` for the application services
 
 Keep those values synchronized from the same source secret.

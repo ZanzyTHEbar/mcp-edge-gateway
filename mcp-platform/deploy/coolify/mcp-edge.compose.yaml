@@ -27,6 +27,10 @@ services:
       MCP_EDGE_OPERATOR_TOKEN_PATH: /run/secrets/mcp-edge-operator-token
       MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
     networks:
