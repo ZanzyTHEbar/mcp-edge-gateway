@@ -79,15 +79,15 @@ Use these files as the operator source templates for environment values:
 - `../../control-plane.env.example`
 - `../../platform-db.env.example`
 
-### Required File Mounts
+### Required Secret Paths
 
 These compose files intentionally do not hard-code host bind mounts for secrets.
 
-In Coolify, configure file mounts so the runtime-visible paths below exist inside each container:
+In Coolify, provide the secret inputs below before the first real deploy:
 
 `mcp-platform-db`
 
-- `/run/secrets/mcp-platform-db-password`
+- set `MCP_PLATFORM_DB_PASSWORD_HOST_PATH` to the host path of the PostgreSQL password file
 
 `mcp-control-plane`
 
@@ -113,7 +113,7 @@ The control plane can resolve Infisical path references directly for its platfor
 
 That means the database password must exist in two deployment surfaces:
 
-- as the PostgreSQL password file mounted into `mcp-platform-db`
+- as the PostgreSQL password file exposed through `MCP_PLATFORM_DB_PASSWORD_HOST_PATH`
 - as the password embedded inside `MCP_PLATFORM_DATABASE_URL` for the application services
 
 Keep those values synchronized from the same source secret.

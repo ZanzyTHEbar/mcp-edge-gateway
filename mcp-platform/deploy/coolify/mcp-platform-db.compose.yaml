@@ -24,6 +24,7 @@ services:
       start_period: 20s
     volumes:
       - mcp-platform-db-data:/var/lib/postgresql/data
+      - ${MCP_PLATFORM_DB_PASSWORD_HOST_PATH:?set MCP_PLATFORM_DB_PASSWORD_HOST_PATH}:/run/secrets/mcp-platform-db-password:ro
     networks:
       - coolify
 
