@@ -1,0 +1,7 @@
+*
+!/.gitignore
+!/README.md
+!/mcp-platform/
+!/mcp-platform/**
+!/mcp-control-plane/
+!/mcp-control-plane/**

@@ -1,0 +1,118 @@
+name: mcp-platform-core
+
+services:
+  mcp-platform-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    stop_grace_period: 1m
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mcp_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-mcp_platform}
+      POSTGRES_PASSWORD_FILE: /run/secrets/mcp-platform-db-password
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:---data-checksums}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TZ:-UTC}
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    volumes:
+      - mcp-platform-db-data:/var/lib/postgresql/data
+    networks:
+      - coolify
+
+  mcp-control-plane:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.control-plane
+    image: mcp-control-plane:coolify
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MCP_PLATFORM_ENV: ${MCP_PLATFORM_ENV:-production}
+      MCP_PLATFORM_LOG_LEVEL: ${MCP_PLATFORM_LOG_LEVEL:-info}
+      MCP_PLATFORM_DATABASE_URL: ${MCP_PLATFORM_DATABASE_URL:?set MCP_PLATFORM_DATABASE_URL}
+      MCP_CONTROL_PLANE_HTTP_BIND_ADDR: ${MCP_CONTROL_PLANE_HTTP_BIND_ADDR:-:8081}
+      MCP_CONTROL_PLANE_RECONCILE_INTERVAL: ${MCP_CONTROL_PLANE_RECONCILE_INTERVAL:-30s}
+      MCP_CONTROL_PLANE_HEALTHCHECK_INTERVAL: ${MCP_CONTROL_PLANE_HEALTHCHECK_INTERVAL:-30s}
+      MCP_CONTROL_PLANE_AUTHENTIK_ISSUER_URL: ${MCP_CONTROL_PLANE_AUTHENTIK_ISSUER_URL:?set MCP_CONTROL_PLANE_AUTHENTIK_ISSUER_URL}
+      MCP_CONTROL_PLANE_AUTHENTIK_CLIENT_ID: ${MCP_CONTROL_PLANE_AUTHENTIK_CLIENT_ID:?set MCP_CONTROL_PLANE_AUTHENTIK_CLIENT_ID}
+      MCP_CONTROL_PLANE_AUTHENTIK_CLIENT_SECRET_PATH: ${MCP_CONTROL_PLANE_AUTHENTIK_CLIENT_SECRET_PATH:-/platform/mcp-control-plane/authentik-client-secret}
+      MCP_CONTROL_PLANE_COOLIFY_API_BASE_URL: ${MCP_CONTROL_PLANE_COOLIFY_API_BASE_URL:?set MCP_CONTROL_PLANE_COOLIFY_API_BASE_URL}
+      MCP_CONTROL_PLANE_COOLIFY_API_TOKEN_PATH: ${MCP_CONTROL_PLANE_COOLIFY_API_TOKEN_PATH:-/platform/mcp-control-plane/coolify-api-token}
+      MCP_CONTROL_PLANE_COOLIFY_PROJECT_UUID: ${MCP_CONTROL_PLANE_COOLIFY_PROJECT_UUID:?set MCP_CONTROL_PLANE_COOLIFY_PROJECT_UUID}
+      MCP_CONTROL_PLANE_COOLIFY_ENVIRONMENT_NAME: ${MCP_CONTROL_PLANE_COOLIFY_ENVIRONMENT_NAME:-}
+      MCP_CONTROL_PLANE_COOLIFY_ENVIRONMENT_UUID: ${MCP_CONTROL_PLANE_COOLIFY_ENVIRONMENT_UUID:-}
+      MCP_CONTROL_PLANE_COOLIFY_SERVER_UUID: ${MCP_CONTROL_PLANE_COOLIFY_SERVER_UUID:?set MCP_CONTROL_PLANE_COOLIFY_SERVER_UUID}
+      MCP_CONTROL_PLANE_COOLIFY_DESTINATION_UUID: ${MCP_CONTROL_PLANE_COOLIFY_DESTINATION_UUID:?set MCP_CONTROL_PLANE_COOLIFY_DESTINATION_UUID}
+      MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL: ${MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL:?set MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL}
+      MCP_CONTROL_PLANE_INFISICAL_PROJECT_SLUG: ${MCP_CONTROL_PLANE_INFISICAL_PROJECT_SLUG:?set MCP_CONTROL_PLANE_INFISICAL_PROJECT_SLUG}
+      MCP_CONTROL_PLANE_INFISICAL_ENV_SLUG: ${MCP_CONTROL_PLANE_INFISICAL_ENV_SLUG:?set MCP_CONTROL_PLANE_INFISICAL_ENV_SLUG}
+      MCP_CONTROL_PLANE_INFISICAL_MACHINE_CLIENT_ID: ${MCP_CONTROL_PLANE_INFISICAL_MACHINE_CLIENT_ID:?set MCP_CONTROL_PLANE_INFISICAL_MACHINE_CLIENT_ID}
+      MCP_CONTROL_PLANE_INFISICAL_MACHINE_CLIENT_SECRET_PATH: /run/secrets/mcp-control-plane-infisical-machine-client-secret
+      MCP_CONTROL_PLANE_MEALIE_BASE_URL: ${MCP_CONTROL_PLANE_MEALIE_BASE_URL:?set MCP_CONTROL_PLANE_MEALIE_BASE_URL}
+      MCP_CONTROL_PLANE_ACTUAL_SERVER_URL: ${MCP_CONTROL_PLANE_ACTUAL_SERVER_URL:?set MCP_CONTROL_PLANE_ACTUAL_SERVER_URL}
+      MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE:-}
+      MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET: ${MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET:-}
+      MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
+    expose:
+      - "8081"
+    depends_on:
+      mcp-platform-db:
+        condition: service_healthy
+    networks:
+      - coolify
+
+  mcp-edge:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.edge
+    image: mcp-edge:coolify
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MCP_PLATFORM_ENV: ${MCP_PLATFORM_ENV:-production}
+      MCP_PLATFORM_LOG_LEVEL: ${MCP_PLATFORM_LOG_LEVEL:-info}
+      MCP_PLATFORM_DATABASE_URL: ${MCP_PLATFORM_DATABASE_URL:?set MCP_PLATFORM_DATABASE_URL}
+      MCP_EDGE_HTTP_BIND_ADDR: ${MCP_EDGE_HTTP_BIND_ADDR:-:8080}
+      MCP_EDGE_PUBLIC_BASE_URL: ${MCP_EDGE_PUBLIC_BASE_URL:?set MCP_EDGE_PUBLIC_BASE_URL}
+      MCP_EDGE_AUTHENTIK_ISSUER_URL: ${MCP_EDGE_AUTHENTIK_ISSUER_URL:?set MCP_EDGE_AUTHENTIK_ISSUER_URL}
+      MCP_EDGE_AUTHENTIK_CLIENT_ID: ${MCP_EDGE_AUTHENTIK_CLIENT_ID:?set MCP_EDGE_AUTHENTIK_CLIENT_ID}
+      MCP_EDGE_AUTHENTIK_CLIENT_SECRET_PATH: /run/secrets/mcp-edge-authentik-client-secret
+      MCP_EDGE_OPERATOR_TOKEN_PATH: /run/secrets/mcp-edge-operator-token
+      MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
+      MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
+    expose:
+      - "8080"
+    depends_on:
+      mcp-platform-db:
+        condition: service_healthy
+    networks:
+      - coolify
+
+volumes:
+  mcp-platform-db-data: {}
+
+networks:
+  coolify:
+    external: true

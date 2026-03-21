@@ -1,0 +1,13 @@
+.git
+.cursor
+agent-transcripts
+tmp
+dist
+bin
+
+*.local
+.env
+.env.*
+
+**/.DS_Store
+**/node_modules

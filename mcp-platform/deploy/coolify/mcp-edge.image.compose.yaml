@@ -1,0 +1,35 @@
+name: mcp-edge
+
+services:
+  mcp-edge:
+    image: ${MCP_EDGE_IMAGE:?set MCP_EDGE_IMAGE}
+    pull_policy: always
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MCP_PLATFORM_ENV: ${MCP_PLATFORM_ENV:-production}
+      MCP_PLATFORM_LOG_LEVEL: ${MCP_PLATFORM_LOG_LEVEL:-info}
+      MCP_PLATFORM_DATABASE_URL: ${MCP_PLATFORM_DATABASE_URL:?set MCP_PLATFORM_DATABASE_URL}
+      MCP_EDGE_HTTP_BIND_ADDR: ${MCP_EDGE_HTTP_BIND_ADDR:-:8080}
+      MCP_EDGE_PUBLIC_BASE_URL: ${MCP_EDGE_PUBLIC_BASE_URL:?set MCP_EDGE_PUBLIC_BASE_URL}
+      MCP_EDGE_AUTHENTIK_ISSUER_URL: ${MCP_EDGE_AUTHENTIK_ISSUER_URL:?set MCP_EDGE_AUTHENTIK_ISSUER_URL}
+      MCP_EDGE_AUTHENTIK_CLIENT_ID: ${MCP_EDGE_AUTHENTIK_CLIENT_ID:?set MCP_EDGE_AUTHENTIK_CLIENT_ID}
+      MCP_EDGE_AUTHENTIK_CLIENT_SECRET_PATH: /run/secrets/mcp-edge-authentik-client-secret
+      MCP_EDGE_OPERATOR_TOKEN_PATH: /run/secrets/mcp-edge-operator-token
+      MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
+      MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
+    expose:
+      - "8080"
+    networks:
+      - coolify
+
+networks:
+  coolify:
+    external: true

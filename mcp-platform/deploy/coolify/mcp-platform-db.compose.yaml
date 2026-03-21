@@ -1,0 +1,35 @@
+name: mcp-platform-db
+
+services:
+  mcp-platform-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    stop_grace_period: 1m
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mcp_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-mcp_platform}
+      POSTGRES_PASSWORD_FILE: /run/secrets/mcp-platform-db-password
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS:---data-checksums}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: ${TZ:-UTC}
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    volumes:
+      - mcp-platform-db-data:/var/lib/postgresql/data
+    networks:
+      - coolify
+
+volumes:
+  mcp-platform-db-data: {}
+
+networks:
+  coolify:
+    external: true
