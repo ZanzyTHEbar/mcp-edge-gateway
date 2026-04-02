@@ -42,6 +42,15 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
     expose:
       - "8081"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-control-plane
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - coolify
 

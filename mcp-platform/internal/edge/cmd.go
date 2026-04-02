@@ -5,6 +5,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"dragonserver/mcp-platform/internal/contracts"
+	"dragonserver/mcp-platform/internal/selfcheck"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -12,7 +16,7 @@ import (
 )
 
 func NewRootCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "mcp-edge",
 		Short: "Run the DragonServer MCP shared edge",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -34,6 +38,9 @@ func NewRootCommand() *cobra.Command {
 			return server.ListenAndServe(ctx, cfg)
 		},
 	}
+
+	cmd.AddCommand(newHealthcheckCommand())
+	return cmd
 }
 
 func buildLogger(cfg Config) zerolog.Logger {
@@ -45,4 +52,20 @@ func buildLogger(cfg Config) zerolog.Logger {
 	logger := log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	zerolog.SetGlobalLevel(level)
 	return logger.Level(level).With().Timestamp().Logger()
+}
+
+func newHealthcheckCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "healthcheck",
+		Short: "Probe the local edge readiness endpoint",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return selfcheck.ProbeHTTP(
+				os.Getenv(contracts.EnvEdgeHTTPBindAddr),
+				":8080",
+				"/health/ready",
+				5*time.Second,
+			)
+		},
+	}
 }

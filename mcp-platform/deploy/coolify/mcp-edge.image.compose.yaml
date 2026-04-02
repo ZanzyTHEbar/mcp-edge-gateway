@@ -27,6 +27,15 @@ services:
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
     expose:
       - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-edge
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     networks:
       - coolify
 

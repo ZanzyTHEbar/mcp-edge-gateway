@@ -46,6 +46,15 @@ services:
       - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-control-plane
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - coolify
 

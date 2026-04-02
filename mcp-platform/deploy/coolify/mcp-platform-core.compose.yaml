@@ -73,6 +73,15 @@ services:
       - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-control-plane
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     depends_on:
       mcp-platform-db:
         condition: service_healthy
@@ -111,6 +120,15 @@ services:
       - /data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-edge
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     depends_on:
       mcp-platform-db:
         condition: service_healthy

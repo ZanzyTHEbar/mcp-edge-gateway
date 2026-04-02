@@ -68,6 +68,15 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
     expose:
       - "8081"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-control-plane
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     depends_on:
       mcp-platform-db:
         condition: service_healthy
@@ -100,6 +109,15 @@ services:
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
     expose:
       - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - /app/mcp-edge
+        - healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     depends_on:
       mcp-platform-db:
         condition: service_healthy
