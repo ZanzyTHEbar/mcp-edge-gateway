@@ -30,7 +30,7 @@ services:
 
   mcp-control-plane:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.control-plane
     image: mcp-control-plane:coolify
     init: true
@@ -81,7 +81,7 @@ services:
 
   mcp-edge:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.edge
     image: mcp-edge:coolify
     init: true

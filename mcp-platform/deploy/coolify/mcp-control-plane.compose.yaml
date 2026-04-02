@@ -3,7 +3,7 @@ name: mcp-control-plane
 services:
   mcp-control-plane:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.control-plane
     image: mcp-control-plane:coolify
     init: true
