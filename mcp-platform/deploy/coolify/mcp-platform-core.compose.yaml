@@ -29,7 +29,10 @@ services:
       - coolify
 
   infisical-bridge:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.infisical-bridge
+    image: infisical-bridge:coolify
     init: true
     restart: unless-stopped
     read_only: true
@@ -41,8 +44,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    volumes:
-      - ./infisical-bridge.nginx.conf:/etc/nginx/conf.d/default.conf:ro
     expose:
       - "8080"
     healthcheck:

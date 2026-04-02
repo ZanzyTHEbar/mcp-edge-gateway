@@ -2,7 +2,8 @@ name: mcp-control-plane
 
 services:
   infisical-bridge:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
+    image: ${MCP_INFISICAL_BRIDGE_IMAGE:?set MCP_INFISICAL_BRIDGE_IMAGE}
+    pull_policy: always
     init: true
     restart: unless-stopped
     read_only: true
@@ -14,8 +15,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    volumes:
-      - ./infisical-bridge.nginx.conf:/etc/nginx/conf.d/default.conf:ro
     expose:
       - "8080"
     healthcheck:

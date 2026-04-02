@@ -58,6 +58,8 @@ Use:
 
 This mode requires prebuilt images in a registry reachable by Coolify.
 
+When using the registry-image manifests, you must also provide `MCP_INFISICAL_BRIDGE_IMAGE` for the bundled Infisical bridge sidecar.
+
 If the runtime source is not currently available to Coolify as a git repository, registry-image mode is the correct deployment path.
 
 Keep environment-specific rollout procedures, live hostnames, and operational identifiers in a private operations repository instead of this public runtime source tree.
