@@ -66,6 +66,8 @@ Keep environment-specific rollout procedures, live hostnames, and operational id
 
 - the shared external Docker network is named `coolify`
 - `mcp-control-plane` is attached to that network so tenant DNS names resolve during health probes
+- the control-plane deployment artifacts include an internal `infisical-bridge` sidecar that proxies to Infisical through `coolify-proxy` using Docker DNS
+- the recommended `MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL` value is `http://infisical-bridge:8080`
 - `mcp-platform-db` is internal-only and must not receive a public domain
 - `mcp-control-plane` is internal-only and must not receive a public domain
 - `mcp-edge` is the only core service that should receive the public MCP domain
@@ -133,8 +135,9 @@ For the combined core stack, the compose file already models the database depend
 After Coolify reports the services healthy enough to stay running:
 
 1. verify `mcp-platform-db` is reachable from `mcp-control-plane`
-2. verify `mcp-control-plane` returns `200` on `/health/live`
-3. verify `mcp-control-plane` exposes expected readiness state on `/health/ready`
-4. verify `mcp-edge` returns `200` on `/health/live`
-5. verify `mcp-edge` publishes OAuth metadata and protected-resource metadata from the public domain
-6. verify no public domain is assigned to `mcp-platform-db` or `mcp-control-plane`
+2. verify `infisical-bridge` is healthy and reachable from `mcp-control-plane`
+3. verify `mcp-control-plane` returns `200` on `/health/live`
+4. verify `mcp-control-plane` exposes expected readiness state on `/health/ready`
+5. verify `mcp-edge` returns `200` on `/health/live`
+6. verify `mcp-edge` publishes OAuth metadata and protected-resource metadata from the public domain
+7. verify no public domain is assigned to `mcp-platform-db` or `mcp-control-plane`
