@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"sync"
 	"time"
 
 	dbmigrations "dragonserver/mcp-platform/db/migrations"
@@ -47,9 +48,15 @@ type tenantStore interface {
 }
 
 const (
-	migrationLockClassID  int32 = 0x6d6370
-	migrationLockObjectID int32 = 1
+	migrationLockClassID     int32 = 0x6d6370
+	migrationLockObjectID    int32 = 1
+	controlPlaneLockObjectID int32 = 2
 )
+
+type ControlPlaneLock struct {
+	mu   sync.Mutex
+	conn *pgxpool.Conn
+}
 
 func NewStore(ctx context.Context, databaseURL string, logger zerolog.Logger) (*Store, error) {
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
@@ -85,6 +92,71 @@ func (s *Store) Ping(ctx context.Context) error {
 		return fmt.Errorf("ping database: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) AcquireControlPlaneLock(ctx context.Context) (*ControlPlaneLock, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire control-plane lock connection: %w", err)
+	}
+
+	var acquired bool
+	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, $2)`, migrationLockClassID, controlPlaneLockObjectID).Scan(&acquired); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("acquire control-plane advisory lock: %w", err)
+	}
+	if !acquired {
+		conn.Release()
+		return nil, fmt.Errorf("control-plane advisory lock is already held")
+	}
+
+	return &ControlPlaneLock{conn: conn}, nil
+}
+
+func (l *ControlPlaneLock) Release(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conn == nil {
+		return nil
+	}
+	defer l.conn.Release()
+
+	var released bool
+	err := l.conn.QueryRow(ctx, `select pg_advisory_unlock($1, $2)`, migrationLockClassID, controlPlaneLockObjectID).Scan(&released)
+	l.conn = nil
+	if err != nil {
+		return fmt.Errorf("release control-plane advisory lock: %w", err)
+	}
+	if !released {
+		return fmt.Errorf("control-plane advisory lock was not held")
+	}
+	return nil
+}
+
+func (l *ControlPlaneLock) Held(ctx context.Context) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conn == nil {
+		return false
+	}
+	var held bool
+	err := l.conn.QueryRow(ctx, `
+		select exists (
+			select 1
+			from pg_locks
+			where locktype = 'advisory'
+				and classid = $1::oid
+				and objid = $2
+				and pid = pg_backend_pid()
+		)
+	`, migrationLockClassID, controlPlaneLockObjectID).Scan(&held)
+	return err == nil && held
 }
 
 func (s *Store) RunMigrations(ctx context.Context) error {

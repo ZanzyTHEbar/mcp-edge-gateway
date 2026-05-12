@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	defaultTenantImageActualBudget = "actual-mcp-server:latest"
+	defaultTenantImageActualBudget = "ghcr.io/zanzythebar/actual-mcp-server:latest"
 	defaultTenantImageMemory       = "ghcr.io/zanzythebar/mcp-memory-libsql-go:latest"
-	defaultTenantImageMealie       = "mealie-mcp:latest"
+	defaultTenantImageMealie       = "ghcr.io/zanzythebar/mealie-mcp:latest"
 	deleteRequeueInterval          = 2 * time.Minute
 )
 
@@ -607,7 +607,6 @@ func renderMemoryTenant(cfg Config, tenant TenantInstance, service catalog.Servi
   %s:
     image: %s
     restart: unless-stopped
-    command: ["-transport", "stdio", "-projects-dir", "/data/projects"]
     environment:
       PORT: ${PORT}
       TRANSPORT: ${TRANSPORT}

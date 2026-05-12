@@ -23,7 +23,10 @@ Use the public repo-backed Coolify pattern already proven by existing public app
 - `build_pack`: `dockercompose`
 - `base_directory`: `/`
 - `git_commit_sha`: `HEAD` during initial rollout, then freeze to a specific SHA before cutover
-- `docker_compose_location`: `/deploy/coolify/mcp-platform-core.compose.yaml` for the core stack
+- preferred import path in the standalone public runtime repo: `/docker-compose.yaml`
+- equivalent path in this parent repository checkout: `/mcp-platform/docker-compose.yaml`
+- explicit artifact path in the standalone public runtime repo: `/deploy/coolify/mcp-platform-core.compose.yaml`
+- equivalent explicit artifact path in this parent repository checkout: `/mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`
 
 Use separate compose files only when intentionally splitting the core stack into distinct Coolify applications.
 
@@ -58,9 +61,28 @@ Mounted runtime files:
 
 ## Remaining Execution Order
 
-1. Create and push the public runtime-only repository.
-2. Point the new Coolify core stack at that public repository.
-3. Deploy `mcp-platform-db`.
-4. Deploy `mcp-control-plane` and validate migrations plus canary reconcile behavior.
-5. Deploy `mcp-edge` and validate OAuth metadata plus protected routing.
+Completed:
+
+1. Public runtime repository was created and published at `ZanzyTHEbar/dragonserver-mcp-platform-runtime`.
+2. `mcp-platform-db` rollout was completed and validated healthy.
+3. `mcp-control-plane` rollout was completed and hardened:
+   - native healthchecks are in place
+   - the stable internal `infisical-bridge` path is in use
+   - internal readiness is verified on the shared `coolify` network
+
+Remaining:
+
+1. Publish the pre-deployment hardening build that includes singleton control-plane leadership and strict readiness signals.
+2. Verify `mcp-control-plane` readiness returns `ready` only when `leader=true`, `dependencies_configured=true`, and `tenant_runtime_configured=true`.
+3. Seed one canary Authentik service grant and verify control-plane reconcile end to end.
+4. Deploy and validate `mcp-edge` live.
+5. Validate OAuth metadata, protected-resource metadata, and protected routing through `mcp-edge`.
 6. Cut over the public MCP domain only after end-to-end canary validation succeeds.
+
+## Pre-Deployment Safety Contracts
+
+- Run exactly one live `mcp-control-plane` instance. The runtime holds a PostgreSQL advisory lock for singleton leadership and reports not-ready when it is not the leader.
+- Treat `/health/live` as process liveness only.
+- Treat `/health/ready` as the deployment gate. The control plane is not ready unless the database is reachable, singleton leadership is held, external dependencies are configured, tenant runtime configuration is complete, and the last reconcile state is healthy.
+- Deploy order remains `mcp-platform-db` -> `mcp-control-plane` -> `mcp-edge`. `mcp-edge` loads enabled service catalog entries from the database, so the control plane must seed the catalog before edge startup.
+- `memory` remains a legacy SSE upstream for this rollout. The current edge adapter relays SSE and rewrites endpoint events; it is not a full SSE-to-streamable-HTTP protocol bridge.

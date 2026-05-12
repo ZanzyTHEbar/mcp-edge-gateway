@@ -234,6 +234,31 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &introspection))
 	require.True(t, introspection.Active)
 	require.Equal(t, registration.ClientID, introspection.ClientID)
+
+	store := server.stateStore.(*memoryEdgeStateStore)
+	store.mu.RLock()
+	events := append([]edgeAuditEvent(nil), store.auditEvents...)
+	store.mu.RUnlock()
+
+	requireAuditEvent(t, events, "oauth.client.registered", "created")
+	requireAuditEvent(t, events, "browser_login.started", "started")
+	requireAuditEvent(t, events, "browser_login.completed", "completed")
+	requireAuditEvent(t, events, "oauth.authorize.allowed", "allowed")
+	requireAuditEvent(t, events, "oauth.token.issued", "issued")
+	requireAuditEvent(t, events, "oauth.introspect", "active")
+	requireAuditEvent(t, events, "oauth.introspect", "inactive")
+	requireAuditEvent(t, events, "mcp.service.access.allowed", "allowed")
+}
+
+func requireAuditEvent(t *testing.T, events []edgeAuditEvent, eventType string, status string) {
+	t.Helper()
+	for _, event := range events {
+		if event.EventType == eventType && event.EventStatus == status {
+			require.NotEmpty(t, event.CorrelationID)
+			return
+		}
+	}
+	require.Failf(t, "missing audit event", "event_type=%s status=%s events=%+v", eventType, status, events)
 }
 
 func TestBrowserLoginStateSurvivesFailedCallback(t *testing.T) {

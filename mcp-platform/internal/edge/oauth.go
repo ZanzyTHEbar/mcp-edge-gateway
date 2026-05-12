@@ -230,6 +230,16 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusInternalServerError, "client_store_failed", "unable to persist client registration")
 		return
 	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{
+		ActorSubjectSub: createdBySubject,
+		EventType:       "oauth.client.registered",
+		EventStatus:     "created",
+		Payload: map[string]any{
+			"client_id":                  record.ID,
+			"token_endpoint_auth_method": record.TokenEndpointAuthMethod,
+			"scopes":                     record.Scopes,
+		},
+	})
 	response := clientRegistrationResponse{
 		ClientID:                record.ID,
 		ClientIDIssuedAt:        record.CreatedAt.Unix(),
@@ -269,6 +279,11 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(r.FormValue("scope")) == "" {
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: subject.Sub,
+			EventType:       "oauth.authorize.denied",
+			EventStatus:     "invalid_scope",
+		})
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "at least one mcp:<service> scope is required")
 		return
 	}
@@ -276,14 +291,36 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		allowed, err := o.grants.AllowedScopes(r.Context(), subject.Sub, r.FormValue("scope"))
 		if err != nil {
 			o.logger.Error().Err(err).Str("subject_sub", subject.Sub).Msg("scope authorization lookup failed")
+			o.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: subject.Sub,
+				EventType:       "oauth.authorize.denied",
+				EventStatus:     "authorization_unavailable",
+			})
 			writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
 			return
 		}
 		if !allowed {
+			o.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: subject.Sub,
+				EventType:       "oauth.authorize.denied",
+				EventStatus:     "service_not_granted",
+				Payload: map[string]any{
+					"scope": r.FormValue("scope"),
+				},
+			})
 			writeJSONError(w, http.StatusForbidden, "service_not_granted", "requested scope is not granted for this subject")
 			return
 		}
 	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{
+		ActorSubjectSub: subject.Sub,
+		EventType:       "oauth.authorize.allowed",
+		EventStatus:     "allowed",
+		Payload: map[string]any{
+			"client_id": r.FormValue("client_id"),
+			"scope":     r.FormValue("scope"),
+		},
+	})
 
 	if err := o.server.HandleAuthorizeRequest(w, r); err != nil {
 		o.logger.Error().Err(err).Msg("oauth authorize request failed")
@@ -304,7 +341,16 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	if err := o.server.HandleTokenRequest(w, r); err != nil {
 		o.logger.Error().Err(err).Msg("oauth token request failed")
+		return
 	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{
+		EventType:   "oauth.token.issued",
+		EventStatus: "issued",
+		Payload: map[string]any{
+			"client_id":  r.FormValue("client_id"),
+			"grant_type": r.FormValue("grant_type"),
+		},
+	})
 }
 
 func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) {
@@ -325,9 +371,22 @@ func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) 
 
 	ti, err := o.manager.LoadAccessToken(r.Context(), token)
 	if err != nil {
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			EventType:   "oauth.introspect",
+			EventStatus: "inactive",
+		})
 		writeJSON(w, http.StatusOK, tokenIntrospectionResponse{Active: false})
 		return
 	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{
+		ActorSubjectSub: ti.GetUserID(),
+		EventType:       "oauth.introspect",
+		EventStatus:     "active",
+		Payload: map[string]any{
+			"client_id": ti.GetClientID(),
+			"scope":     ti.GetScope(),
+		},
+	})
 
 	writeJSON(w, http.StatusOK, tokenIntrospectionResponse{
 		Active:    true,
@@ -338,6 +397,18 @@ func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) 
 		Iat:       ti.GetAccessCreateAt().Unix(),
 		Exp:       ti.GetAccessCreateAt().Add(ti.GetAccessExpiresIn()).Unix(),
 	})
+}
+
+func (o *OAuthService) recordAuditEvent(ctx context.Context, event edgeAuditEvent) {
+	if o.stateStore == nil {
+		return
+	}
+	if correlationID, ok := ctx.Value(correlationIDContextKey).(string); ok && event.CorrelationID == "" {
+		event.CorrelationID = correlationID
+	}
+	if err := o.stateStore.RecordAuditEvent(ctx, event); err != nil {
+		o.logger.Error().Err(err).Str("event_type", event.EventType).Msg("failed to record oauth audit event")
+	}
 }
 
 func newOAuthServerConfig() *oauth2server.Config {

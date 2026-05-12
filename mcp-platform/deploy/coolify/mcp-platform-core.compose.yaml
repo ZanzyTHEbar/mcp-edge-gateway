@@ -30,7 +30,7 @@ services:
 
   infisical-bridge:
     build:
-      context: .
+      context: ../..
       dockerfile: Dockerfile.infisical-bridge
     image: infisical-bridge:coolify
     init: true
@@ -44,6 +44,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    environment:
+      MCP_INFISICAL_BRIDGE_UPSTREAM_HOST: ${MCP_INFISICAL_BRIDGE_UPSTREAM_HOST:?set MCP_INFISICAL_BRIDGE_UPSTREAM_HOST}
     expose:
       - "8080"
     healthcheck:
@@ -59,7 +61,7 @@ services:
 
   mcp-control-plane:
     build:
-      context: .
+      context: ../..
       dockerfile: Dockerfile.control-plane
     image: mcp-control-plane:coolify
     init: true
@@ -121,7 +123,7 @@ services:
 
   mcp-edge:
     build:
-      context: .
+      context: ../..
       dockerfile: Dockerfile.edge
     image: mcp-edge:coolify
     init: true
@@ -161,6 +163,8 @@ services:
       retries: 6
       start_period: 20s
     depends_on:
+      mcp-control-plane:
+        condition: service_healthy
       mcp-platform-db:
         condition: service_healthy
     networks:

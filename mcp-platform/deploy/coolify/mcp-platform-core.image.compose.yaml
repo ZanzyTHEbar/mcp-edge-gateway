@@ -24,6 +24,7 @@ services:
       start_period: 20s
     volumes:
       - mcp-platform-db-data:/var/lib/postgresql/data
+      - /data/coolify/mcp-platform-secrets/mcp-platform-db-password:/run/secrets/mcp-platform-db-password:ro
     networks:
       - coolify
 
@@ -41,6 +42,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    environment:
+      MCP_INFISICAL_BRIDGE_UPSTREAM_HOST: ${MCP_INFISICAL_BRIDGE_UPSTREAM_HOST:?set MCP_INFISICAL_BRIDGE_UPSTREAM_HOST}
     expose:
       - "8080"
     healthcheck:
@@ -93,6 +96,8 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET: ${MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
     healthcheck:
@@ -136,6 +141,10 @@ services:
       MCP_EDGE_OPERATOR_TOKEN_PATH: /run/secrets/mcp-edge-operator-token
       MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
+      - /data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
     healthcheck:
@@ -148,6 +157,8 @@ services:
       retries: 6
       start_period: 20s
     depends_on:
+      mcp-control-plane:
+        condition: service_healthy
       mcp-platform-db:
         condition: service_healthy
     networks:

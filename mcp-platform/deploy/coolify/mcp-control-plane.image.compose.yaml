@@ -15,6 +15,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    environment:
+      MCP_INFISICAL_BRIDGE_UPSTREAM_HOST: ${MCP_INFISICAL_BRIDGE_UPSTREAM_HOST:?set MCP_INFISICAL_BRIDGE_UPSTREAM_HOST}
     expose:
       - "8080"
     healthcheck:
@@ -67,6 +69,8 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET: ${MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
+    volumes:
+      - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
     healthcheck:

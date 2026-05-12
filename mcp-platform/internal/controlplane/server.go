@@ -15,6 +15,7 @@ type App struct {
 	cfg        Config
 	logger     zerolog.Logger
 	store      *Store
+	lock       *ControlPlaneLock
 	deps       *DependencyClients
 	reconciler *Reconciler
 	health     *healthState
@@ -43,11 +44,17 @@ func NewApp(ctx context.Context, cfg Config, logger zerolog.Logger) (*App, error
 	if err != nil {
 		return nil, err
 	}
+	lock, err := store.AcquireControlPlaneLock(ctx)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
 
 	app := &App{
 		cfg:        cfg,
 		logger:     logger,
 		store:      store,
+		lock:       lock,
 		reconciler: NewReconciler(store, logger),
 		health:     &healthState{},
 	}
@@ -59,6 +66,12 @@ func NewApp(ctx context.Context, cfg Config, logger zerolog.Logger) (*App, error
 }
 
 func (a *App) Close() {
+	if a.lock != nil {
+		if err := a.lock.Release(context.Background()); err != nil {
+			a.logger.Error().Err(err).Msg("failed to release control-plane advisory lock")
+		}
+		a.lock = nil
+	}
 	if a.store != nil {
 		a.store.Close()
 	}
@@ -168,6 +181,11 @@ func (a *App) runHealthProbe(ctx context.Context) error {
 }
 
 func (a *App) runReconcileCycle(ctx context.Context) (ReconcileSummary, error) {
+	if !a.hasLeadership(ctx) {
+		err := errors.New("control-plane advisory lock is not held")
+		a.health.setReconcileResult(ReconcileSummary{}, err)
+		return ReconcileSummary{}, err
+	}
 	if a.deps != nil && a.deps.Authentik != nil {
 		if err := a.deps.Authentik.SyncStore(ctx, a.store); err != nil {
 			a.health.setReconcileResult(ReconcileSummary{}, err)
@@ -217,21 +235,31 @@ func (a *App) handleLiveness(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	snapshot := a.health.snapshot()
+	leader := a.hasLeadership(r.Context())
+	dependenciesConfigured := a.cfg.HasDependencyConfig()
+	tenantRuntimeConfigured := a.cfg.HasTenantRuntimeConfig()
 	statusCode := http.StatusOK
 	statusText := "ready"
-	if !snapshot.Ready {
+	if !snapshot.Ready || !leader || !dependenciesConfigured || !tenantRuntimeConfigured {
 		statusCode = http.StatusServiceUnavailable
 		statusText = "not_ready"
 	}
 
 	writeJSON(w, statusCode, map[string]any{
-		"status":            statusText,
-		"database_ok":       snapshot.DatabaseOK,
-		"last_error":        snapshot.LastError,
-		"last_reconcile_at": snapshot.LastReconcileAt,
-		"last_summary":      snapshot.LastSummary,
-		"ts":                time.Now().UTC(),
+		"status":                    statusText,
+		"database_ok":               snapshot.DatabaseOK,
+		"leader":                    leader,
+		"dependencies_configured":   dependenciesConfigured,
+		"tenant_runtime_configured": tenantRuntimeConfigured,
+		"last_error":                snapshot.LastError,
+		"last_reconcile_at":         snapshot.LastReconcileAt,
+		"last_summary":              snapshot.LastSummary,
+		"ts":                        time.Now().UTC(),
 	})
+}
+
+func (a *App) hasLeadership(ctx context.Context) bool {
+	return a.lock != nil && a.lock.Held(ctx)
 }
 
 func (h *healthState) snapshot() healthSnapshot {

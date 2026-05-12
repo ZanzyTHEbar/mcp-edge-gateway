@@ -126,6 +126,12 @@ Responsibilities:
 - drive redeploys when secrets or service templates change
 - reconcile drift between desired state and actual runtime state
 
+Deployment contract:
+
+- the live control plane is a singleton reconciler
+- the runtime holds a PostgreSQL advisory lock for leadership
+- non-leader instances must not report ready or reconcile tenants
+
 ## 5.3 `mcp-platform-db`
 
 PostgreSQL is the durable state store for the platform.
@@ -277,7 +283,7 @@ The edge may also carry derived service authorization state in token or server-s
 
 ## 9. Service Catalog Model
 
-The service catalog defines supported MCP services and the runtime contract for each.
+The service catalog defines supported MCP services and the runtime contract for each. The code catalog is the bootstrap source used by the control plane to seed the database; the database `service_catalog` table is the runtime projection that the edge consumes outside fixture mode.
 
 Each service catalog entry should include:
 
@@ -301,7 +307,7 @@ Each service catalog entry should include:
 |---|---|---|---|
 | `mealie` | `mealie-mcp` | `/mealie/mcp` | Native streamable HTTP |
 | `actualbudget` | `actualbudget-mcp` | `/actualbudget/mcp` | Native HTTP transport today |
-| `memory` | `memory` | `/memory/mcp` | Requires transport normalization behind edge |
+| `memory` | `memory` | `/memory/mcp` | Legacy SSE relay with endpoint-event rewriting; not a full streamable-HTTP bridge yet |
 
 ## 10. Coolify Tenant Model
 

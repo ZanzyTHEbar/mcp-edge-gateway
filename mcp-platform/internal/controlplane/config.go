@@ -207,7 +207,9 @@ func (c Config) HasTenantRuntimeConfig() bool {
 	return c.CoolifyProjectUUID != "" &&
 		(c.CoolifyEnvironmentName != "" || c.CoolifyEnvironmentUUID != "") &&
 		c.CoolifyServerUUID != "" &&
-		c.CoolifyDestinationUUID != ""
+		c.CoolifyDestinationUUID != "" &&
+		c.MealieBaseURL != "" &&
+		c.ActualServerURL != ""
 }
 
 func parseDurationEnv(envKey string) (time.Duration, error) {

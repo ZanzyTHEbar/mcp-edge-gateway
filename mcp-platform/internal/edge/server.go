@@ -16,6 +16,10 @@ import (
 
 const correlationIDHeader = "X-Correlation-ID"
 
+type requestContextKey string
+
+const correlationIDContextKey requestContextKey = "correlation_id"
+
 var ErrServiceNotFound = errors.New("service not found")
 
 type Server struct {
@@ -38,14 +42,28 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	stateStoreOwned := false
 	if stateStore == nil {
 		var err error
 		stateStore, err = newEdgeStateStore(ctx, cfg, logger)
 		if err != nil {
 			return nil, err
 		}
+		stateStoreOwned = true
 	}
-	entries := catalog.DefaultCatalogV1()
+	entries, err := stateStore.ListEnabledServiceCatalog(ctx)
+	if err != nil {
+		if stateStoreOwned {
+			_ = stateStore.Close()
+		}
+		return nil, err
+	}
+	if len(entries) == 0 {
+		if stateStoreOwned {
+			_ = stateStore.Close()
+		}
+		return nil, errors.New("no enabled services in service catalog")
+	}
 	services := make(map[string]catalog.ServiceCatalogEntry, len(entries))
 	for _, entry := range entries {
 		services[entry.ServiceID] = entry
@@ -54,19 +72,25 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		var err error
 		resolver, err = buildDefaultResolver(cfg, entries, stateStore)
 		if err != nil {
-			_ = stateStore.Close()
+			if stateStoreOwned {
+				_ = stateStore.Close()
+			}
 			return nil, err
 		}
 	}
 
 	authRuntime, err := NewAuthRuntime(cfg, logger, stateStore)
 	if err != nil {
-		_ = stateStore.Close()
+		if stateStoreOwned {
+			_ = stateStore.Close()
+		}
 		return nil, err
 	}
 	oauthService, err := NewOAuthService(cfg, logger, entries, stateStore, authRuntime, authRuntime)
 	if err != nil {
-		_ = stateStore.Close()
+		if stateStoreOwned {
+			_ = stateStore.Close()
+		}
 		return nil, err
 	}
 
@@ -167,10 +191,27 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 		tokenInfo, err := s.oauth.ValidateBearerToken(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp-edge", resource_metadata="`+strings.TrimRight(s.publicURL, "/")+`/.well-known/oauth-protected-resource"`)
+			s.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ServiceID:   service.ServiceID,
+				EventType:   "mcp.service.access.denied",
+				EventStatus: "invalid_token",
+				Payload: map[string]any{
+					"path": r.URL.Path,
+				},
+			})
 			writeJSONError(w, http.StatusUnauthorized, "invalid_token", "a valid bearer token is required for MCP service access")
 			return
 		}
 		if !scopeIncludesService(tokenInfo.GetScope(), service.ServiceID) {
+			s.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: tokenInfo.GetUserID(),
+				ServiceID:       service.ServiceID,
+				EventType:       "mcp.service.access.denied",
+				EventStatus:     "insufficient_scope",
+				Payload: map[string]any{
+					"scope": tokenInfo.GetScope(),
+				},
+			})
 			writeJSONError(w, http.StatusForbidden, "insufficient_scope", "token scope does not cover this MCP service")
 			return
 		}
@@ -182,10 +223,22 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 					Str("service_id", service.ServiceID).
 					Str("subject_sub", tokenInfo.GetUserID()).
 					Msg("service grant lookup failed")
+				s.recordAuditEvent(r.Context(), edgeAuditEvent{
+					ActorSubjectSub: tokenInfo.GetUserID(),
+					ServiceID:       service.ServiceID,
+					EventType:       "mcp.service.access.denied",
+					EventStatus:     "authorization_unavailable",
+				})
 				writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
 				return
 			}
 			if !allowed {
+				s.recordAuditEvent(r.Context(), edgeAuditEvent{
+					ActorSubjectSub: tokenInfo.GetUserID(),
+					ServiceID:       service.ServiceID,
+					EventType:       "mcp.service.access.denied",
+					EventStatus:     "service_not_granted",
+				})
 				writeJSONError(w, http.StatusForbidden, "service_not_granted", "subject is not entitled to this MCP service")
 				return
 			}
@@ -212,11 +265,27 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 				Str("service_id", service.ServiceID).
 				Str("subject_sub", tokenInfo.GetUserID()).
 				Msg("tenant resolution failed")
+			s.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: tokenInfo.GetUserID(),
+				ServiceID:       service.ServiceID,
+				EventType:       "mcp.service.access.denied",
+				EventStatus:     errorCode,
+			})
 			writeJSONError(w, statusCode, errorCode, message)
 			return
 		}
 
-		if service.AdapterRequirement == catalog.AdapterRequirementSSEToHTTPNormalization && r.Method == http.MethodGet {
+		s.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: tokenInfo.GetUserID(),
+			ServiceID:       service.ServiceID,
+			EventType:       "mcp.service.access.allowed",
+			EventStatus:     "allowed",
+			Payload: map[string]any{
+				"path": r.URL.Path,
+			},
+		})
+
+		if catalog.RequiresLegacySSEEndpointRewrite(service.AdapterRequirement) && r.Method == http.MethodGet {
 			proxy := NewLegacySSEEndpointProxy(
 				target.BaseURL,
 				service.PublicPath,
@@ -246,6 +315,7 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 			correlationID = uuid.NewString()
 		}
 
+		r = r.WithContext(context.WithValue(r.Context(), correlationIDContextKey, correlationID))
 		r = s.auth.InjectBrowserSubject(r)
 		w.Header().Set(correlationIDHeader, correlationID)
 		s.logger.Info().
@@ -256,6 +326,18 @@ func (s *Server) withRequestContext(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) recordAuditEvent(ctx context.Context, event edgeAuditEvent) {
+	if s.stateStore == nil {
+		return
+	}
+	if correlationID, ok := ctx.Value(correlationIDContextKey).(string); ok && event.CorrelationID == "" {
+		event.CorrelationID = correlationID
+	}
+	if err := s.stateStore.RecordAuditEvent(ctx, event); err != nil {
+		s.logger.Error().Err(err).Str("event_type", event.EventType).Msg("failed to record edge audit event")
+	}
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {

@@ -44,6 +44,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    environment:
+      MCP_INFISICAL_BRIDGE_UPSTREAM_HOST: ${MCP_INFISICAL_BRIDGE_UPSTREAM_HOST:?set MCP_INFISICAL_BRIDGE_UPSTREAM_HOST}
     expose:
       - "8080"
     healthcheck:
@@ -161,6 +163,8 @@ services:
       retries: 6
       start_period: 20s
     depends_on:
+      mcp-control-plane:
+        condition: service_healthy
       mcp-platform-db:
         condition: service_healthy
     networks:

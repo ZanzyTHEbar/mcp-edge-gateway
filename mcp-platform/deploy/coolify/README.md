@@ -26,9 +26,13 @@ This directory contains the deployment artifacts for the MCP platform core servi
   - registry-image variant of the edge service
 ## Recommended Import Mode
 
-Prefer the repository-root `docker-compose.yaml` when importing this repository into Coolify as a public repo-backed application.
+When importing the standalone public runtime repo (`ZanzyTHEbar/dragonserver-mcp-platform-runtime`) into Coolify, prefer the repository-root `docker-compose.yaml`.
 
-Use `mcp-platform-core.compose.yaml` when you want the explicit deployment artifact path instead of the root convenience file.
+In this parent repository checkout, the equivalent file lives at `mcp-platform/docker-compose.yaml`.
+
+Use `deploy/coolify/mcp-platform-core.compose.yaml` when you want the explicit deployment artifact path instead of the root convenience file.
+
+In this parent repository checkout, the equivalent explicit artifact path is `mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`.
 
 That keeps the platform database, control plane, and edge in one discoverable core stack while still allowing the control plane to create per-tenant Coolify services dynamically.
 
@@ -48,6 +52,10 @@ Use:
 
 This mode requires Coolify to have repository access so it can build from the repo-relative Dockerfile contexts.
 
+In the standalone public runtime repo, the root `docker-compose.yaml` lives at the repository root and therefore uses `context: .`.
+
+The compose artifacts inside `deploy/coolify/` live two directories below the runtime repo root and therefore use `build.context: ../..` so the root Dockerfiles and Go source tree remain addressable in repo-backed builds.
+
 ### 2. Registry-image mode
 
 Use:
@@ -58,7 +66,12 @@ Use:
 
 This mode requires prebuilt images in a registry reachable by Coolify.
 
-When using the registry-image manifests, you must also provide `MCP_INFISICAL_BRIDGE_IMAGE` for the bundled Infisical bridge sidecar.
+When using the registry-image manifests, you must also provide:
+
+- `MCP_INFISICAL_BRIDGE_IMAGE` for the bundled Infisical bridge sidecar
+- `MCP_CONTROL_PLANE_IMAGE` for the control-plane runtime image
+- `MCP_EDGE_IMAGE` for the edge runtime image
+- `MCP_INFISICAL_BRIDGE_UPSTREAM_HOST` for the environment-specific Infisical hostname routed by the shared proxy
 
 If the runtime source is not currently available to Coolify as a git repository, registry-image mode is the correct deployment path.
 
@@ -70,6 +83,7 @@ Keep environment-specific rollout procedures, live hostnames, and operational id
 - `mcp-control-plane` is attached to that network so tenant DNS names resolve during health probes
 - the control-plane deployment artifacts include an internal `infisical-bridge` sidecar that proxies to Infisical through `coolify-proxy` using Docker DNS
 - the recommended `MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL` value is `http://infisical-bridge:8080`
+- `MCP_INFISICAL_BRIDGE_UPSTREAM_HOST` must point at the environment-specific public Infisical hostname that Traefik routes on the shared proxy
 - `mcp-platform-db` is internal-only and must not receive a public domain
 - `mcp-control-plane` is internal-only and must not receive a public domain
 - `mcp-edge` is the only core service that should receive the public MCP domain
@@ -85,7 +99,9 @@ Use these files as the operator source templates for environment values:
 
 ### Required Secret Paths
 
-These compose files intentionally do not hard-code host bind mounts for secrets.
+These DragonServer deployment artifacts do hard-code the expected host bind mounts for file-backed secrets.
+
+That is intentional for the current DragonServer rollout: the target resource server materializes the required secret files under `/data/coolify/mcp-platform-secrets`, and the compose artifacts mount those files into the runtime containers at the corresponding `/run/secrets/...` paths.
 
 These DragonServer deployment artifacts expect the materialized secret files to exist under `/data/coolify/mcp-platform-secrets` on the target resource server before the first real deploy.
 

@@ -29,7 +29,13 @@ Each service catalog entry defines:
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `mealie` | `Mealie` | `mealie-mcp` | `streamable-http` | `3031` | `/mealie/mcp` | `/mcp` | `/mcp` | `GET` returns discovery JSON with `transport=streamable-http` | `small` | `stateless` | `none` |
 | `actualbudget` | `Actual Budget` | `actualbudget-mcp` | `streamable-http` | `3000` | `/actualbudget/mcp` | `/http` | `/http` | `GET` returns a live MCP JSON-RPC error rather than connection failure | `small` | `stateless` | `path-translation` |
-| `memory` | `Memory` | `memory` | `sse` | `8090` | `/memory/mcp` | `/sse` | `/sse` | `GET` returns `text/event-stream` and an endpoint event | `medium` | `stateful-libsql` | `sse-to-http-normalization` |
+| `memory` | `Memory` | `memory` | `sse` | `8090` | `/memory/mcp` | `/sse` | `/sse` | `GET` returns `text/event-stream` and an endpoint event | `medium` | `stateful-libsql` | `legacy-sse-endpoint-rewrite` |
+
+Runtime ownership note:
+
+- `internal/catalog.DefaultCatalogV1()` is the bootstrap catalog used by `mcp-control-plane` to seed the database.
+- The database `service_catalog` table is the runtime catalog projection.
+- `mcp-edge` must use enabled rows from the database outside fixture mode so disabled services do not remain advertised through public routes or OAuth scopes.
 
 ## 3. Secret Contracts
 
@@ -73,7 +79,8 @@ Logical secret contract:
 Behavior:
 
 - the upstream runtime remains SSE today
-- the edge or adapter layer must present a streamable MCP-facing contract at `/memory/mcp`
+- the current edge adapter relays the legacy SSE stream and rewrites upstream endpoint events to the public `/memory/mcp` path
+- this is not a full SSE-to-streamable-HTTP protocol bridge; if a client requires streamable HTTP semantics, keep `memory` disabled until a real bridge is implemented
 
 ## 4. Adapter Rules
 
@@ -89,7 +96,8 @@ Behavior:
 
 ### 4.3 Memory
 
-- explicit transport normalization required
+- legacy SSE relay and endpoint-event rewriting are implemented today
+- full SSE-to-streamable-HTTP protocol conversion is not implemented today
 - no client may depend on the raw `/sse` public route after cutover
 
 ## 5. Operational Rules

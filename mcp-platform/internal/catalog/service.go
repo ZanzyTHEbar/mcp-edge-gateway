@@ -10,10 +10,15 @@ const (
 type AdapterRequirement string
 
 const (
-	AdapterRequirementNone                   AdapterRequirement = "none"
-	AdapterRequirementPathTranslation        AdapterRequirement = "path-translation"
-	AdapterRequirementSSEToHTTPNormalization AdapterRequirement = "sse-to-http-normalization"
+	AdapterRequirementNone                             AdapterRequirement = "none"
+	AdapterRequirementPathTranslation                  AdapterRequirement = "path-translation"
+	AdapterRequirementLegacySSEEndpointRewrite         AdapterRequirement = "legacy-sse-endpoint-rewrite"
+	AdapterRequirementDeprecatedSSEToHTTPNormalization AdapterRequirement = "sse-to-http-normalization"
 )
+
+func RequiresLegacySSEEndpointRewrite(requirement AdapterRequirement) bool {
+	return requirement == AdapterRequirementLegacySSEEndpointRewrite || requirement == AdapterRequirementDeprecatedSSEToHTTPNormalization
+}
 
 type SecretDefinition struct {
 	Key      string
@@ -86,7 +91,7 @@ func DefaultCatalogV1() []ServiceCatalogEntry {
 			HealthProbeExpectation: "GET returns text/event-stream and emits an endpoint event",
 			ResourceProfile:        "medium",
 			PersistencePolicy:      "stateful-libsql",
-			AdapterRequirement:     AdapterRequirementSSEToHTTPNormalization,
+			AdapterRequirement:     AdapterRequirementLegacySSEEndpointRewrite,
 			SecretContract: []SecretDefinition{
 				{Key: "libsql-url", Required: true},
 				{Key: "libsql-auth-token", Required: true},

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"dragonserver/mcp-platform/internal/catalog"
 	"dragonserver/mcp-platform/internal/domain"
 
 	oauth2 "github.com/go-oauth2/oauth2/v4"
@@ -41,8 +42,19 @@ type edgeStateStore interface {
 	PutBrowserSession(context.Context, string, browserSession) error
 	GetBrowserSession(context.Context, string, time.Time) (browserSession, bool, error)
 	UpsertSubject(context.Context, IdentityClaims) error
+	ListEnabledServiceCatalog(context.Context) ([]catalog.ServiceCatalogEntry, error)
+	RecordAuditEvent(context.Context, edgeAuditEvent) error
 	Ping(context.Context) error
 	Close() error
+}
+
+type edgeAuditEvent struct {
+	CorrelationID   string
+	ActorSubjectSub string
+	ServiceID       string
+	EventType       string
+	EventStatus     string
+	Payload         map[string]any
 }
 
 type memoryEdgeStateStore struct {
@@ -53,6 +65,7 @@ type memoryEdgeStateStore struct {
 	pendingLogins map[string]pendingLogin
 	sessions      map[string]browserSession
 	subjects      map[string]IdentityClaims
+	auditEvents   []edgeAuditEvent
 }
 
 type postgresEdgeStateStore struct {
@@ -117,6 +130,7 @@ func newMemoryEdgeStateStore() (*memoryEdgeStateStore, error) {
 		pendingLogins: make(map[string]pendingLogin),
 		sessions:      make(map[string]browserSession),
 		subjects:      make(map[string]IdentityClaims),
+		auditEvents:   make([]edgeAuditEvent, 0),
 	}, nil
 }
 
@@ -279,6 +293,17 @@ func (s *memoryEdgeStateStore) AllowedScopes(ctx context.Context, subjectSub str
 		}
 	}
 	return true, nil
+}
+
+func (s *memoryEdgeStateStore) ListEnabledServiceCatalog(context.Context) ([]catalog.ServiceCatalogEntry, error) {
+	return catalog.DefaultCatalogV1(), nil
+}
+
+func (s *memoryEdgeStateStore) RecordAuditEvent(_ context.Context, event edgeAuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditEvents = append(s.auditEvents, event)
+	return nil
 }
 
 func (s *memoryEdgeStateStore) Ping(context.Context) error {
@@ -963,6 +988,126 @@ func (s *postgresEdgeStateStore) AllowedScopes(ctx context.Context, subjectSub s
 		return false, fmt.Errorf("check scope grants for %s: %w", subjectSub, err)
 	}
 	return count == len(serviceIDs), nil
+}
+
+func (s *postgresEdgeStateStore) ListEnabledServiceCatalog(ctx context.Context) ([]catalog.ServiceCatalogEntry, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`
+			select
+				service_id,
+				display_name,
+				upstream_service_name,
+				transport_type,
+				internal_port,
+				public_path,
+				internal_upstream_path,
+				health_path,
+				health_probe_expectation,
+				resource_profile,
+				persistence_policy,
+				adapter_requirement,
+				secret_contract
+			from service_catalog
+			where enabled = true
+			order by service_id
+		`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled service catalog: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []catalog.ServiceCatalogEntry
+	for rows.Next() {
+		var entry catalog.ServiceCatalogEntry
+		var transportType string
+		var adapterRequirement string
+		var secretContractRaw []byte
+		if err := rows.Scan(
+			&entry.ServiceID,
+			&entry.DisplayName,
+			&entry.UpstreamServiceName,
+			&transportType,
+			&entry.InternalPort,
+			&entry.PublicPath,
+			&entry.InternalUpstreamPath,
+			&entry.HealthPath,
+			&entry.HealthProbeExpectation,
+			&entry.ResourceProfile,
+			&entry.PersistencePolicy,
+			&adapterRequirement,
+			&secretContractRaw,
+		); err != nil {
+			return nil, fmt.Errorf("scan enabled service catalog: %w", err)
+		}
+		entry.TransportType = catalog.TransportType(transportType)
+		entry.AdapterRequirement = catalog.AdapterRequirement(adapterRequirement)
+		if err := json.Unmarshal(secretContractRaw, &entry.SecretContract); err != nil {
+			return nil, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enabled service catalog: %w", err)
+	}
+	return entries, nil
+}
+
+func (s *postgresEdgeStateStore) RecordAuditEvent(ctx context.Context, event edgeAuditEvent) error {
+	payload := event.Payload
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payloadRaw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal audit event payload: %w", err)
+	}
+
+	correlationID := strings.TrimSpace(event.CorrelationID)
+	if correlationID == "" {
+		correlationID = "unknown"
+	}
+	eventType := strings.TrimSpace(event.EventType)
+	if eventType == "" {
+		return fmt.Errorf("audit event type is required")
+	}
+	eventStatus := strings.TrimSpace(event.EventStatus)
+	if eventStatus == "" {
+		eventStatus = "unknown"
+	}
+
+	var actorSubjectSub *string
+	if value := strings.TrimSpace(event.ActorSubjectSub); value != "" {
+		actorSubjectSub = &value
+	}
+	var serviceID *string
+	if value := strings.TrimSpace(event.ServiceID); value != "" {
+		serviceID = &value
+	}
+
+	if _, err := s.pool.Exec(
+		ctx,
+		`
+			insert into audit_events (
+				correlation_id,
+				actor_subject_sub,
+				service_id,
+				event_type,
+				event_status,
+				payload
+			) values ($1, $2, $3, $4, $5, $6)
+		`,
+		correlationID,
+		actorSubjectSub,
+		serviceID,
+		eventType,
+		eventStatus,
+		payloadRaw,
+	); err != nil {
+		return fmt.Errorf("insert audit event %s: %w", eventType, err)
+	}
+	return nil
 }
 
 func (s *postgresEdgeStateStore) Ping(ctx context.Context) error {

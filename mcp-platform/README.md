@@ -16,11 +16,12 @@ Implemented runtime capabilities now include:
 - shared MCP edge service paths for `mealie`, `actualbudget`, and `memory`
 - MCP-facing OAuth metadata, authorization, token, refresh, registration, and introspection flows
 - durable edge persistence for OAuth clients, tokens, browser sessions, and pending logins
+- durable edge audit-event persistence for OAuth, browser-login, and protected service access decisions
 - DB-backed subject-aware tenant resolution at the edge
 - control-plane persistence, migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
 - transport/path normalization for the day-one service catalog:
   - `/actualbudget/mcp` -> upstream `/http`
-  - `/memory/mcp` -> upstream SSE endpoint normalization
+  - `/memory/mcp` -> legacy SSE relay with endpoint-event rewriting
 
 ## Repository Layout
 
@@ -69,6 +70,16 @@ The current validation loop for this module is:
 go test -buildvcs=false ./...
 go build -buildvcs=false ./...
 ```
+
+PostgreSQL-backed edge state tests are opt-in so unit tests remain hermetic by default:
+
+```sh
+MCP_PLATFORM_TEST_DATABASE_URL='postgres://mcp_platform:mcp_platform@127.0.0.1:5432/mcp_platform_test?sslmode=disable' \
+MCP_PLATFORM_TEST_DATABASE_URL_ALLOW_TRUNCATE=1 \
+  go test -buildvcs=false ./internal/edge -run Postgres
+```
+
+The integration test truncates edge/control-plane runtime tables and therefore refuses to run unless the database name contains `test` and `MCP_PLATFORM_TEST_DATABASE_URL_ALLOW_TRUNCATE=1` is set.
 
 ## Batch 18 Status
 

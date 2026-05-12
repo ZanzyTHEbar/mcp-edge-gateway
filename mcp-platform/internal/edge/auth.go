@@ -197,9 +197,20 @@ func (a *AuthRuntime) BeginBrowserLogin(w http.ResponseWriter, r *http.Request, 
 		writeJSONError(w, http.StatusInternalServerError, "login_state_failed", "unable to persist login state")
 		return
 	}
+	a.recordAuditEvent(r.Context(), edgeAuditEvent{
+		EventType:   "browser_login.started",
+		EventStatus: "started",
+		Payload: map[string]any{
+			"return_to": returnTo,
+		},
+	})
 
 	if err := a.authenticator.Start(w, r, pending); err != nil {
 		a.logger.Error().Err(err).Msg("delegated login start failed")
+		a.recordAuditEvent(r.Context(), edgeAuditEvent{
+			EventType:   "browser_login.failed",
+			EventStatus: "delegated_login_unavailable",
+		})
 		writeJSONError(w, http.StatusBadGateway, "delegated_login_unavailable", "unable to start delegated login")
 	}
 }
@@ -222,10 +233,18 @@ func (a *AuthRuntime) handleCallback(w http.ResponseWriter, r *http.Request) {
 	pending, ok, err := a.stateStore.GetPendingLogin(r.Context(), state, time.Now().UTC())
 	if err != nil {
 		a.logger.Error().Err(err).Msg("delegated login state lookup failed")
+		a.recordAuditEvent(r.Context(), edgeAuditEvent{
+			EventType:   "browser_login.failed",
+			EventStatus: "login_state_unavailable",
+		})
 		writeJSONError(w, http.StatusServiceUnavailable, "login_state_unavailable", "unable to load delegated login state")
 		return
 	}
 	if !ok {
+		a.recordAuditEvent(r.Context(), edgeAuditEvent{
+			EventType:   "browser_login.failed",
+			EventStatus: "invalid_state",
+		})
 		writeJSONError(w, http.StatusBadRequest, "invalid_state", "login state is invalid or expired")
 		return
 	}
@@ -233,6 +252,10 @@ func (a *AuthRuntime) handleCallback(w http.ResponseWriter, r *http.Request) {
 	claims, err := a.authenticator.Complete(r.Context(), r, pending)
 	if err != nil {
 		a.logger.Error().Err(err).Msg("delegated login callback failed")
+		a.recordAuditEvent(r.Context(), edgeAuditEvent{
+			EventType:   "browser_login.failed",
+			EventStatus: "delegated_login_failed",
+		})
 		writeJSONError(w, http.StatusUnauthorized, "delegated_login_failed", "unable to complete delegated login")
 		return
 	}
@@ -262,6 +285,11 @@ func (a *AuthRuntime) handleCallback(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "session_create_failed", "unable to persist browser session")
 		return
 	}
+	a.recordAuditEvent(r.Context(), edgeAuditEvent{
+		ActorSubjectSub: claims.Sub,
+		EventType:       "browser_login.completed",
+		EventStatus:     "completed",
+	})
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     browserSessionCookieName,
@@ -274,6 +302,18 @@ func (a *AuthRuntime) handleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	http.Redirect(w, r, pending.ReturnTo, http.StatusFound)
+}
+
+func (a *AuthRuntime) recordAuditEvent(ctx context.Context, event edgeAuditEvent) {
+	if a.stateStore == nil {
+		return
+	}
+	if correlationID, ok := ctx.Value(correlationIDContextKey).(string); ok && event.CorrelationID == "" {
+		event.CorrelationID = correlationID
+	}
+	if err := a.stateStore.RecordAuditEvent(ctx, event); err != nil {
+		a.logger.Error().Err(err).Str("event_type", event.EventType).Msg("failed to record auth audit event")
+	}
 }
 
 func identityHasGrant(claims IdentityClaims, serviceID string) bool {

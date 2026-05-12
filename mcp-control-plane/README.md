@@ -35,6 +35,8 @@ with a single, consistent platform model:
   - Verified upstream and runtime lineage for `actualbudget-mcp` / `actual-mcp-server` (Coolify on `cool-res`).
 - `DRAGONSERVER_RUNTIME_ROLLOUT.md`
   - Private live rollout inputs, fixed Coolify identifiers, secret-mount state, and the remaining execution order.
+- `REFACTOR_EXECUTION_PLAN.md`
+  - Execution-grade batch plan for the approved runtime cleanup and refactor program.
 
 ## Final Design Snapshot
 

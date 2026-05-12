@@ -67,6 +67,7 @@ This file is an execution artifact for Batch 0 of the implementation handoff.
 - The runtime image is `actual-mcp-server:latest`
 - The image does not expose OCI source labels, so the audited deployment cannot be traced back to a repo from image metadata alone
 - The current service is directly exposed on host port `3000`
+- **Source lineage (post-audit, 2026-03-21):** `docker exec` on the live container shows `/app/package.json` matches upstream [ZanzyTHEbar/actual-mcp-server](https://github.com/ZanzyTHEbar/actual-mcp-server) at `actual-mcp-server@0.4.8` with `@actual-app/api@26.3.0`. Host image tags include `actual-mcp-server:api-26.3.0-20260321`. Image ID `sha256:eb2df3f47f730784b349197f87d98432172a18407d4e0a196e6bb9971a19e889`. Full evidence and re-verify commands: [ACTUAL_MCP_SOURCE_AUDIT.md](./ACTUAL_MCP_SOURCE_AUDIT.md)
 
 ### 3.2 Mealie
 
