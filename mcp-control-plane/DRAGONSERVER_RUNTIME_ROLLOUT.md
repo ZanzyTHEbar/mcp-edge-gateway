@@ -46,7 +46,6 @@ Current file-backed secret directory on `cool-res`:
 
 Mounted runtime files:
 
-- `/run/secrets/mcp-platform-db-password`
 - `/run/secrets/mcp-control-plane-infisical-machine-client-secret`
 - `/run/secrets/mcp-edge-authentik-client-secret`
 - `/run/secrets/mcp-edge-operator-token`
@@ -64,7 +63,7 @@ Mounted runtime files:
 Completed:
 
 1. Public runtime repository was created and published at `ZanzyTHEbar/dragonserver-mcp-platform-runtime`.
-2. `mcp-platform-db` rollout was completed and validated healthy.
+2. The platform persistence layer is SQLite/libSQL and is mounted as a shared core-service volume.
 3. `mcp-control-plane` rollout was completed and hardened:
    - native healthchecks are in place
    - the stable internal `infisical-bridge` path is in use
@@ -81,8 +80,8 @@ Remaining:
 
 ## Pre-Deployment Safety Contracts
 
-- Run exactly one live `mcp-control-plane` instance. The runtime holds a PostgreSQL advisory lock for singleton leadership and reports not-ready when it is not the leader.
+- Run exactly one live `mcp-control-plane` instance. SQLite/libSQL is configured for the single-writer core deployment model.
 - Treat `/health/live` as process liveness only.
 - Treat `/health/ready` as the deployment gate. The control plane is not ready unless the database is reachable, singleton leadership is held, external dependencies are configured, tenant runtime configuration is complete, and the last reconcile state is healthy.
-- Deploy order remains `mcp-platform-db` -> `mcp-control-plane` -> `mcp-edge`. `mcp-edge` loads enabled service catalog entries from the database, so the control plane must seed the catalog before edge startup.
-- `memory` remains a legacy SSE upstream for this rollout. The current edge adapter relays SSE and rewrites endpoint events; it is not a full SSE-to-streamable-HTTP protocol bridge.
+- Deploy order is `mcp-control-plane` -> `mcp-edge`. `mcp-edge` loads enabled service catalog entries from the SQLite/libSQL database, so the control plane must migrate and seed the catalog before edge startup.
+- `memory` remains an SSE upstream internally, but the public edge implements SSE-to-streamable-HTTP bridging.

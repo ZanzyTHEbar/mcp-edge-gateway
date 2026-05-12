@@ -29,7 +29,7 @@ Each service catalog entry defines:
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `mealie` | `Mealie` | `mealie-mcp` | `streamable-http` | `3031` | `/mealie/mcp` | `/mcp` | `/mcp` | `GET` returns discovery JSON with `transport=streamable-http` | `small` | `stateless` | `none` |
 | `actualbudget` | `Actual Budget` | `actualbudget-mcp` | `streamable-http` | `3000` | `/actualbudget/mcp` | `/http` | `/http` | `GET` returns a live MCP JSON-RPC error rather than connection failure | `small` | `stateless` | `path-translation` |
-| `memory` | `Memory` | `memory` | `sse` | `8090` | `/memory/mcp` | `/sse` | `/sse` | `GET` returns `text/event-stream` and an endpoint event | `medium` | `stateful-libsql` | `legacy-sse-endpoint-rewrite` |
+| `memory` | `Memory` | `memory` | `streamable-http` | `8090` | `/memory/mcp` | `/sse` | `/sse` | edge bridges streamable HTTP requests to the upstream SSE MCP endpoint | `medium` | `stateful-libsql` | `sse-to-streamable-http` |
 
 Runtime ownership note:
 
@@ -79,7 +79,7 @@ Logical secret contract:
 Behavior:
 
 - the upstream runtime remains SSE today
-- the current edge adapter relays the legacy SSE stream and rewrites upstream endpoint events to the public `/memory/mcp` path
+- the edge terminates streamable HTTP and bridges requests to the upstream SSE MCP endpoint
 - this is not a full SSE-to-streamable-HTTP protocol bridge; if a client requires streamable HTTP semantics, keep `memory` disabled until a real bridge is implemented
 
 ## 4. Adapter Rules
@@ -96,7 +96,7 @@ Behavior:
 
 ### 4.3 Memory
 
-- legacy SSE relay and endpoint-event rewriting are implemented today
+- full SSE-to-streamable-HTTP bridging is implemented at the edge
 - full SSE-to-streamable-HTTP protocol conversion is not implemented today
 - no client may depend on the raw `/sse` public route after cutover
 

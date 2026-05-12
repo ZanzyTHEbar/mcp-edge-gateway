@@ -1,16 +1,106 @@
-# DragonServer MCP Platform
+# MCP Platform Runtime
 
-This repository contains the DragonServer MCP platform source and operator documentation.
+This repository contains the production Go runtime for a shared MCP edge and control plane deployment.
 
-## Directories
+Product strategy, architecture decision records, and environment-specific operator runbooks are intentionally kept outside this public runtime repository.
 
-- `mcp-platform`
-  - production Go runtime for `mcp-edge`, `mcp-control-plane`, deployment artifacts, and local validation assets
+## Current Runtime Surface
+
+The module currently produces two binaries:
+
+- `mcp-edge`
 - `mcp-control-plane`
-  - product, engineering, architecture, and rollout contract documentation for the MCP platform
 
-## Notes
+Implemented runtime capabilities now include:
 
-- this repository is intentionally scoped to the MCP platform slices only
-- other sibling directories in the local workspace are not part of this repository
-- Coolify deployment definitions live under `mcp-platform/deploy/coolify`
+- shared MCP edge service paths for `mealie`, `actualbudget`, and `memory`
+- MCP-facing OAuth metadata, authorization, token, refresh, registration, and introspection flows
+- durable SQLite/libSQL edge persistence for OAuth clients, tokens, browser sessions, and pending logins
+- durable edge audit-event persistence for OAuth, browser-login, and protected service access decisions
+- DB-backed subject-aware tenant resolution at the edge
+- control-plane persistence, goose migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
+- transport/path normalization for the day-one service catalog:
+  - `/actualbudget/mcp` -> upstream `/http`
+  - `/memory/mcp` -> full SSE-to-streamable-HTTP bridge for the upstream memory service
+
+## Repository Layout
+
+```text
+.
+├── cmd/
+│   ├── mcp-edge/
+│   └── mcp-control-plane/
+├── db/
+│   ├── migrations/
+│   └── queries/
+├── deploy/
+│   └── coolify/
+├── internal/
+│   ├── catalog/
+│   ├── contracts/
+│   ├── controlplane/
+│   ├── domain/
+│   ├── edge/
+│   ├── ids/
+│   └── platform/sqlite/
+├── control-plane.env.example
+├── docker-compose.yaml
+├── edge.env.example
+├── go.mod
+├── sqlc.yaml
+└── README.md
+```
+
+## Runtime Contracts
+
+The most important public runtime contract sources are:
+
+- `edge.env.example`
+- `control-plane.env.example`
+- `docker-compose.yaml`
+- `deploy/coolify/README.md`
+- `deploy/coolify/*.compose.yaml`
+- `deploy/coolify/*.image.compose.yaml`
+
+Environment-specific rollout plans, live identifiers, and private service audits should live in a separate private operations repository.
+
+## Validation
+
+The current validation loop for this module is:
+
+```sh
+go test -buildvcs=false ./...
+go build -buildvcs=false ./...
+```
+
+SQLite/libSQL is the default persistence layer. sqlc code must be regenerated when `db/queries` or `db/migrations` changes:
+
+```sh
+sqlc generate
+go test -buildvcs=false ./...
+go build -buildvcs=false ./...
+```
+
+## Batch 18 Status
+
+Completed hardening in this module now includes:
+
+- fail-closed edge auth mode outside explicit fixture mode
+- operator-gated sensitive OAuth endpoints
+- restart-safe multi-instance edge state handling
+- goose-managed SQLite/libSQL migrations
+- degraded-startup behavior when the initial reconcile fails
+- softer Authentik snapshot ingestion for malformed rows and unknown service-group mappings
+- improved reconcile summary accounting and better upstream HTTP error detail for Authentik, Infisical, and Coolify failures
+
+Remaining rollout work is now packaging-oriented:
+
+- local artifact validation
+- deployment-readiness review against target dependencies
+- environment-specific rollout execution
+
+## Implementation Directive
+
+New runtime code in this module is written in Go.
+
+Existing TypeScript services such as `mealie-mcp` remain integration surfaces and reference implementations, not the implementation language for the new platform components.

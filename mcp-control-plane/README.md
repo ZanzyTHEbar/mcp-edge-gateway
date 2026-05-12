@@ -59,7 +59,7 @@ The Go runtime under `../mcp-platform/` now implements the core production skele
 - `mcp-edge`
   - shared service paths
   - MCP-facing OAuth flows
-  - durable OAuth/session/client persistence in PostgreSQL
+  - durable OAuth/session/client persistence in SQLite/libSQL
   - DB-backed subject-aware tenant resolution
   - service adapters for `actualbudget` path translation and `memory` SSE normalization
 - `mcp-control-plane`

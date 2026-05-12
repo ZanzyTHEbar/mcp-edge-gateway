@@ -26,7 +26,7 @@ The platform consists of six first-class components:
 
 1. `mcp-edge`
 2. `mcp-control-plane`
-3. `mcp-platform-db`
+3. SQLite/libSQL platform database volume
 4. `infisical`
 5. `authentik`
 6. private tenant MCP resources managed by Coolify
@@ -46,7 +46,7 @@ flowchart LR
     Traefik[Coolify Traefik]
     Edge[mcp-edge]
     Control[mcp-control-plane]
-    DB[(mcp-platform-db)]
+    DB[(SQLite/libSQL platform.db)]
     Infisical[Infisical]
     Authentik[Authentik]
     T1[mcp-mealie-userA]
@@ -129,12 +129,12 @@ Responsibilities:
 Deployment contract:
 
 - the live control plane is a singleton reconciler
-- the runtime holds a PostgreSQL advisory lock for leadership
+- the runtime uses the single-writer SQLite/libSQL core deployment model
 - non-leader instances must not report ready or reconcile tenants
 
-## 5.3 `mcp-platform-db`
+## 5.3 SQLite/libSQL platform database
 
-PostgreSQL is the durable state store for the platform.
+SQLite/libSQL is the durable state store for the platform.
 
 Responsibilities:
 
@@ -452,7 +452,7 @@ sequenceDiagram
     participant CP as mcp-control-plane
     participant Inf as Infisical
     participant Cool as Coolify
-    participant DB as mcp-platform-db
+    participant DB as SQLite/libSQL platform.db
 
     CP->>Auth: sync users, groups, claims
     CP->>DB: update desired grants
@@ -488,7 +488,7 @@ All tenant backends remain private.
 ### Phase 1: Platform Foundation
 
 - deploy `infisical`
-- deploy `mcp-platform-db`
+- initialize the SQLite/libSQL platform database volume through `mcp-control-plane`
 - deploy `mcp-control-plane`
 - deploy `mcp-edge`
 - publish shared public domain and TLS

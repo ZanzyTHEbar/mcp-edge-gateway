@@ -27,7 +27,7 @@ flowchart TB
     Traefik[Coolify Traefik]
     Edge[mcp-edge]
     CP[mcp-control-plane]
-    DB[(mcp-platform-db)]
+    DB[(SQLite/libSQL platform.db)]
     Secrets[Infisical]
     IdP[Authentik]
 
