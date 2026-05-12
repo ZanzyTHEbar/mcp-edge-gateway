@@ -111,3 +111,44 @@ VALUES (?, 'user-sub', 'mealie', 'subject-key', 'u-subject-key-mealie', 'u-subje
 	require.Nil(t, tenants[0].LastHealthyAt)
 	require.Equal(t, domain.TenantRuntimeStateDegraded, tenants[0].RuntimeState)
 }
+
+func TestSeedServiceCatalogDisablesStaleEntriesAndReenablesDefaults(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	_, err = store.db.ExecContext(ctx, `UPDATE service_catalog SET enabled = 0 WHERE service_id = 'mealie'`)
+	require.NoError(t, err)
+	_, err = store.db.ExecContext(ctx, `
+INSERT INTO service_catalog (
+    service_id,
+    display_name,
+    upstream_service_name,
+    transport_type,
+    internal_port,
+    public_path,
+    internal_upstream_path,
+    health_path,
+    health_probe_expectation,
+    resource_profile,
+    persistence_policy,
+    adapter_requirement,
+    secret_contract,
+    enabled
+)
+VALUES ('stale-service', 'Stale', 'stale', 'streamable-http', 8080, '/stale/mcp', '/mcp', '/health', 'ok', 'small', 'ephemeral', 'none', '[]', 1);`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	var mealieEnabled, staleEnabled int
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT enabled FROM service_catalog WHERE service_id = 'mealie'`).Scan(&mealieEnabled))
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT enabled FROM service_catalog WHERE service_id = 'stale-service'`).Scan(&staleEnabled))
+	require.Equal(t, 1, mealieEnabled)
+	require.Equal(t, 0, staleEnabled)
+}

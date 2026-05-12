@@ -95,8 +95,8 @@ Additional MCP services should be added through the service catalog model descri
 Before live DragonServer mutation work begins, the runtime contract now assumes:
 
 1. `mcp-control-plane` is attached to the shared `coolify` Docker network so internal tenant health probes can resolve tenant DNS names directly.
-2. The platform database is deployed first and reachable by both `mcp-edge` and `mcp-control-plane`.
+2. The shared `mcp-platform-data` database volume exists and is mounted before application rollout; `mcp-control-plane` runs SQLite/libSQL migrations before `mcp-edge` starts.
 3. Infisical is deployed and holds the platform secret paths defined in `IMPLEMENTATION_CONTRACTS.md`.
 4. Authentik has the MCP control-plane provider/app configuration plus the MCP entitlement groups.
-5. The env examples in `../mcp-platform/*.env.example` are the source templates for deployment configuration.
+5. The env examples in the repo root (`control-plane.env.example` and `edge.env.example`) are the source templates for deployment configuration.
 6. Coolify deployment definitions now exist in the public runtime repository at `https://github.com/ZanzyTHEbar/dragonserver-mcp-platform-runtime` under `deploy/coolify/`, but the final live cutover plan still needs to be executed from the private operator docs before any mutation window.

@@ -21,7 +21,7 @@ Implemented runtime capabilities now include:
 - control-plane persistence, goose migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
 - transport/path normalization for the day-one service catalog:
   - `/actualbudget/mcp` -> upstream `/http`
-  - `/memory/mcp` -> full SSE-to-streamable-HTTP bridge for the upstream memory service
+  - `/memory/mcp` -> targeted SSE-to-streamable-HTTP request bridge for the upstream memory service
 
 ## Repository Layout
 

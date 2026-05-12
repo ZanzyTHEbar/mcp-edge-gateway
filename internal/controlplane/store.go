@@ -142,7 +142,10 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 }
 
 func (s *Store) SeedServiceCatalog(ctx context.Context) error {
-	for _, entry := range catalog.DefaultCatalogV1() {
+	entries := catalog.DefaultCatalogV1()
+	serviceIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		serviceIDs = append(serviceIDs, entry.ServiceID)
 		secretContract, err := json.Marshal(entry.SecretContract)
 		if err != nil {
 			return fmt.Errorf("marshal secret contract for %s: %w", entry.ServiceID, err)
@@ -164,6 +167,11 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 			Enabled:                1,
 		}); err != nil {
 			return fmt.Errorf("seed service catalog entry %s: %w", entry.ServiceID, err)
+		}
+	}
+	if len(serviceIDs) > 0 {
+		if err := s.queries.DisableServiceCatalogEntriesNotIn(ctx, platformdb.DisableServiceCatalogEntriesNotInParams{ServiceIds: serviceIDs}); err != nil {
+			return fmt.Errorf("disable stale service catalog entries: %w", err)
 		}
 	}
 	return nil

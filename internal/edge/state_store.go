@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,13 @@ type confidentialClient struct {
 	id         string
 	domain     string
 	userID     string
+	secret     string
 	secretHash string
+	scopes     []string
+}
+
+type scopedClient interface {
+	AllowedScopes() []string
 }
 
 type oauthSessionRecord struct {
@@ -176,8 +183,18 @@ func (s *memoryEdgeStateStore) CreateClient(ctx context.Context, record register
 		Domain: firstRedirectURI(record.RedirectURIs),
 		Public: record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone,
 	}
+	clientInfo := confidentialClient{
+		id:     client.ID,
+		domain: client.Domain,
+		secret: client.Secret,
+		userID: client.UserID,
+		scopes: slices.Clone(record.Scopes),
+	}
+	if client.Public {
+		clientInfo.secret = ""
+	}
 	if storeValue, ok := s.clientStore.(*oauth2store.ClientStore); ok {
-		return storeValue.Set(record.ID, client)
+		return storeValue.Set(record.ID, clientInfo)
 	}
 	return fmt.Errorf("memory client store does not support registration")
 }
@@ -203,7 +220,14 @@ func (s *memoryEdgeStateStore) RemoveByRefresh(ctx context.Context, refresh stri
 }
 
 func (s *memoryEdgeStateStore) GetByCode(ctx context.Context, code string) (oauth2.TokenInfo, error) {
-	return s.tokenStore.GetByCode(ctx, code)
+	tokenInfo, err := s.tokenStore.GetByCode(ctx, code)
+	if err != nil || tokenInfo == nil {
+		return tokenInfo, err
+	}
+	if err := s.validateTokenInfoAuthorization(ctx, tokenInfo); err != nil {
+		return nil, err
+	}
+	return tokenInfo, nil
 }
 
 func (s *memoryEdgeStateStore) GetByAccess(ctx context.Context, access string) (oauth2.TokenInfo, error) {
@@ -211,7 +235,37 @@ func (s *memoryEdgeStateStore) GetByAccess(ctx context.Context, access string) (
 }
 
 func (s *memoryEdgeStateStore) GetByRefresh(ctx context.Context, refresh string) (oauth2.TokenInfo, error) {
-	return s.tokenStore.GetByRefresh(ctx, refresh)
+	tokenInfo, err := s.tokenStore.GetByRefresh(ctx, refresh)
+	if err != nil || tokenInfo == nil {
+		return tokenInfo, err
+	}
+	if err := validateRefreshClientBinding(ctx, tokenInfo.GetClientID()); err != nil {
+		return nil, err
+	}
+	if err := s.validateTokenInfoAuthorization(ctx, tokenInfo); err != nil {
+		return nil, err
+	}
+	return tokenInfo, nil
+}
+
+func (s *memoryEdgeStateStore) validateTokenInfoAuthorization(ctx context.Context, tokenInfo oauth2.TokenInfo) error {
+	clientInfo, err := s.GetByID(ctx, tokenInfo.GetClientID())
+	if err != nil {
+		return err
+	}
+	if !clientAllowsScope(clientInfo, tokenInfo.GetScope()) {
+		return fmt.Errorf("oauth client is not registered for requested scope")
+	}
+	if strings.TrimSpace(tokenInfo.GetUserID()) != "" && strings.TrimSpace(tokenInfo.GetScope()) != "" {
+		allowed, err := s.AllowedScopes(ctx, tokenInfo.GetUserID(), tokenInfo.GetScope())
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return fmt.Errorf("requested scope is not granted for this subject")
+		}
+	}
+	return nil
 }
 
 func (s *memoryEdgeStateStore) PutPendingLogin(_ context.Context, pending pendingLogin) error {
@@ -317,13 +371,17 @@ func (s *memoryEdgeStateStore) Close() error {
 	return nil
 }
 
-func (c confidentialClient) GetID() string     { return c.id }
-func (c confidentialClient) GetSecret() string { return "" }
-func (c confidentialClient) GetDomain() string { return c.domain }
-func (c confidentialClient) IsPublic() bool    { return false }
-func (c confidentialClient) GetUserID() string { return c.userID }
+func (c confidentialClient) GetID() string           { return c.id }
+func (c confidentialClient) GetSecret() string       { return c.secret }
+func (c confidentialClient) GetDomain() string       { return c.domain }
+func (c confidentialClient) IsPublic() bool          { return c.secret == "" && c.secretHash == "" }
+func (c confidentialClient) GetUserID() string       { return c.userID }
+func (c confidentialClient) AllowedScopes() []string { return slices.Clone(c.scopes) }
 
 func (c confidentialClient) VerifyPassword(secret string) bool {
+	if c.secretHash == "" {
+		return subtle.ConstantTimeCompare([]byte(c.secret), []byte(secret)) == 1
+	}
 	return subtle.ConstantTimeCompare([]byte(c.secretHash), []byte(hashOpaqueValue(secret))) == 1
 }
 
@@ -597,23 +655,23 @@ func (s *sqliteEdgeStateStore) GetByID(ctx context.Context, id string) (oauth2.C
 	if err != nil {
 		return nil, fmt.Errorf("decode redirect uris for client %s: %w", id, err)
 	}
+	scopes, err := unmarshalStringSliceJSON([]byte(record.Scopes))
+	if err != nil {
+		return nil, fmt.Errorf("decode scopes for client %s: %w", id, err)
+	}
 	userID := ""
 	if record.CreatedBySubjectSub.Valid {
 		userID = record.CreatedBySubjectSub.String
 	}
 	if record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone || !record.ClientSecretHash.Valid || strings.TrimSpace(record.ClientSecretHash.String) == "" {
-		return &models.Client{
-			ID:     id,
-			Domain: firstRedirectURI(redirectURIs),
-			Public: true,
-			UserID: userID,
-		}, nil
+		return confidentialClient{id: id, domain: firstRedirectURI(redirectURIs), userID: userID, scopes: scopes}, nil
 	}
 	return confidentialClient{
 		id:         id,
 		domain:     firstRedirectURI(redirectURIs),
 		userID:     userID,
 		secretHash: record.ClientSecretHash.String,
+		scopes:     scopes,
 	}, nil
 }
 
@@ -712,6 +770,9 @@ func (s *sqliteEdgeStateStore) GetByCode(ctx context.Context, code string) (oaut
 	if err != nil || record == nil {
 		return nil, err
 	}
+	if err := s.validateOAuthSessionAuthorization(ctx, *record); err != nil {
+		return nil, err
+	}
 	return s.buildTokenInfo(*record, code, "", "")
 }
 
@@ -724,11 +785,29 @@ func (s *sqliteEdgeStateStore) GetByAccess(ctx context.Context, access string) (
 }
 
 func (s *sqliteEdgeStateStore) GetByRefresh(ctx context.Context, refresh string) (oauth2.TokenInfo, error) {
+	preflight, err := s.lookupTokenRecord(ctx, "refresh_token_hash", refresh)
+	if err != nil || preflight == nil {
+		return nil, err
+	}
+	if err := validateRefreshClientBinding(ctx, preflight.ClientID); err != nil {
+		return nil, err
+	}
+	if err := s.validateOAuthSessionAuthorization(ctx, *preflight); err != nil {
+		return nil, err
+	}
 	record, err := s.consumeTokenRecord(ctx, "refresh_token_hash", refresh)
 	if err != nil || record == nil {
 		return nil, err
 	}
 	return s.buildTokenInfo(*record, "", "", refresh)
+}
+
+func validateRefreshClientBinding(ctx context.Context, tokenClientID string) error {
+	expectedClientID, _ := ctx.Value(refreshClientIDContextKey{}).(string)
+	if expectedClientID == "" || expectedClientID == tokenClientID {
+		return nil
+	}
+	return fmt.Errorf("refresh token was not issued to this OAuth client")
 }
 
 func (s *sqliteEdgeStateStore) PutPendingLogin(ctx context.Context, pending pendingLogin) error {
@@ -945,7 +1024,22 @@ func (s *sqliteEdgeStateStore) lookupTokenRecord(ctx context.Context, hashColumn
 			}
 			return nil, err
 		}
-		record = oauthSessionRecordFromAccessRow(row)
+		record, err = oauthSessionRecordFromAccessRow(row)
+		if err != nil {
+			return nil, err
+		}
+	case "refresh_token_hash":
+		row, err := s.queries.GetOAuthSessionByRefreshHash(ctx, platformdb.GetOAuthSessionByRefreshHashParams{RefreshTokenHash: hash})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		record, err = oauthSessionRecordFromRefreshLookupRow(row)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unsupported oauth session lookup column %q", hashColumn)
 	}
@@ -967,7 +1061,10 @@ func (s *sqliteEdgeStateStore) consumeTokenRecord(ctx context.Context, hashColum
 			}
 			return nil, err
 		}
-		record = oauthSessionRecordFromCodeRow(row)
+		record, err = oauthSessionRecordFromCodeRow(row)
+		if err != nil {
+			return nil, err
+		}
 	case "refresh_token_hash":
 		row, err := s.queries.ConsumeOAuthSessionByRefreshHash(ctx, platformdb.ConsumeOAuthSessionByRefreshHashParams{RefreshTokenHash: hash})
 		if err != nil {
@@ -976,16 +1073,23 @@ func (s *sqliteEdgeStateStore) consumeTokenRecord(ctx context.Context, hashColum
 			}
 			return nil, err
 		}
-		record = oauthSessionRecordFromRefreshRow(row)
+		record, err = oauthSessionRecordFromRefreshRow(row)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unsupported oauth session consume column %q", hashColumn)
 	}
 	return &record, nil
 }
 
-func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashRow) oauthSessionRecord {
+func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashRow) (oauthSessionRecord, error) {
+	sessionID, err := ids.ParseBytes(row.SessionID)
+	if err != nil {
+		return oauthSessionRecord{}, fmt.Errorf("parse oauth session id: %w", err)
+	}
 	return oauthSessionRecord{
-		SessionID:                   ids.FromBytes(row.SessionID).String(),
+		SessionID:                   sessionID.String(),
 		SubjectSub:                  stringPtrFromNull(row.SubjectSub),
 		ClientID:                    row.ClientID,
 		ServiceID:                   stringPtrFromNull(row.ServiceID),
@@ -1006,15 +1110,39 @@ func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashR
 		RefreshCreateAt:             timePtrFromNull(row.RefreshCreateAt),
 		RefreshExpiresInSeconds:     row.RefreshExpiresInSeconds,
 		ExpiresAt:                   timePtrFromNull(row.ExpiresAt),
+	}, nil
+}
+
+func oauthSessionRecordFromCodeRow(row platformdb.ConsumeOAuthSessionByCodeHashRow) (oauthSessionRecord, error) {
+	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+}
+
+func oauthSessionRecordFromRefreshRow(row platformdb.ConsumeOAuthSessionByRefreshHashRow) (oauthSessionRecord, error) {
+	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+}
+
+func oauthSessionRecordFromRefreshLookupRow(row platformdb.GetOAuthSessionByRefreshHashRow) (oauthSessionRecord, error) {
+	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+}
+
+func (s *sqliteEdgeStateStore) validateOAuthSessionAuthorization(ctx context.Context, record oauthSessionRecord) error {
+	clientInfo, err := s.GetByID(ctx, record.ClientID)
+	if err != nil {
+		return err
 	}
-}
-
-func oauthSessionRecordFromCodeRow(row platformdb.ConsumeOAuthSessionByCodeHashRow) oauthSessionRecord {
-	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
-}
-
-func oauthSessionRecordFromRefreshRow(row platformdb.ConsumeOAuthSessionByRefreshHashRow) oauthSessionRecord {
-	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+	if !clientAllowsScope(clientInfo, record.Scope) {
+		return fmt.Errorf("oauth client is not registered for requested scope")
+	}
+	if record.SubjectSub != nil && strings.TrimSpace(record.Scope) != "" {
+		allowed, err := s.AllowedScopes(ctx, *record.SubjectSub, record.Scope)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return fmt.Errorf("requested scope is not granted for this subject")
+		}
+	}
+	return nil
 }
 
 func (s *sqliteEdgeStateStore) buildTokenInfo(record oauthSessionRecord, rawCode string, rawAccess string, rawRefresh string) (oauth2.TokenInfo, error) {

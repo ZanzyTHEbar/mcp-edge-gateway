@@ -193,6 +193,41 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.Code)
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
 
+	otherRegistrationBody := `{
+		"client_name":"other-client",
+		"redirect_uris":["https://other.example.com/oauth/callback"],
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"token_endpoint_auth_method":"none",
+		"scope":"mcp:mealie"
+	}`
+	req = httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(otherRegistrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+	var otherRegistration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &otherRegistration))
+
+	store := server.stateStore.(*memoryEdgeStateStore)
+	store.mu.RLock()
+	issuedBeforeWrongRefresh := countAuditEvents(store.auditEvents, "oauth.token.issued", "issued")
+	store.mu.RUnlock()
+
+	wrongRefreshForm := url.Values{}
+	wrongRefreshForm.Set("grant_type", "refresh_token")
+	wrongRefreshForm.Set("refresh_token", refreshToken)
+	wrongRefreshForm.Set("client_id", otherRegistration.ClientID)
+	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(wrongRefreshForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.NotEqual(t, http.StatusOK, res.Code)
+	store.mu.RLock()
+	require.Equal(t, issuedBeforeWrongRefresh, countAuditEvents(store.auditEvents, "oauth.token.issued", "issued"))
+	store.mu.RUnlock()
+
 	refreshForm := url.Values{}
 	refreshForm.Set("grant_type", "refresh_token")
 	refreshForm.Set("refresh_token", refreshToken)
@@ -235,7 +270,6 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	require.True(t, introspection.Active)
 	require.Equal(t, registration.ClientID, introspection.ClientID)
 
-	store := server.stateStore.(*memoryEdgeStateStore)
 	store.mu.RLock()
 	events := append([]edgeAuditEvent(nil), store.auditEvents...)
 	store.mu.RUnlock()
@@ -248,6 +282,71 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	requireAuditEvent(t, events, "oauth.introspect", "active")
 	requireAuditEvent(t, events, "oauth.introspect", "inactive")
 	requireAuditEvent(t, events, "mcp.service.access.allowed", "allowed")
+}
+
+func countAuditEvents(events []edgeAuditEvent, eventType string, status string) int {
+	count := 0
+	for _, event := range events {
+		if event.EventType == eventType && event.EventStatus == status {
+			count++
+		}
+	}
+	return count
+}
+
+func TestOAuthAuthorizeRejectsScopeOutsideClientRegistration(t *testing.T) {
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+
+	registrationBody := `{
+		"client_name":"open-webui",
+		"redirect_uris":["https://openwebui.example.com/oauth/callback"],
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"token_endpoint_auth_method":"none",
+		"scope":"mcp:mealie"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(registrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+
+	subject := AuthenticatedSubject{Sub: "fixture-user", Groups: []string{"mcp-users", "mcp-service-actualbudget"}}
+	require.NoError(t, server.stateStore.UpsertSubject(context.Background(), IdentityClaims{Sub: subject.Sub, Groups: subject.Groups}))
+	authorizeRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
+			"&redirect_uri="+url.QueryEscape(registration.RedirectURIs[0])+
+			"&scope="+url.QueryEscape("mcp:actualbudget")+
+			"&state="+url.QueryEscape("test-state")+
+			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
+			"&code_challenge_method=S256",
+		nil,
+	)
+	authorizeRequest = authorizeRequest.WithContext(WithAuthenticatedSubject(authorizeRequest.Context(), subject))
+	res = httptest.NewRecorder()
+	server.oauth.handleAuthorize(res, authorizeRequest)
+
+	require.Equal(t, http.StatusForbidden, res.Code)
+	require.Contains(t, res.Body.String(), "invalid_scope")
+
+	store := server.stateStore.(*memoryEdgeStateStore)
+	store.mu.RLock()
+	events := append([]edgeAuditEvent(nil), store.auditEvents...)
+	store.mu.RUnlock()
+	foundDenied := false
+	for _, event := range events {
+		if event.EventType == "oauth.authorize.denied" && event.EventStatus == "invalid_scope" {
+			foundDenied = true
+		}
+		require.False(t, event.EventType == "oauth.authorize.allowed" && event.EventStatus == "allowed")
+	}
+	require.True(t, foundDenied)
 }
 
 func requireAuditEvent(t *testing.T, events []edgeAuditEvent, eventType string, status string) {

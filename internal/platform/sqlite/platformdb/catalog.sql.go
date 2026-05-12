@@ -7,7 +7,40 @@ package platformdb
 
 import (
 	"context"
+	"strings"
 )
+
+const DisableServiceCatalogEntriesNotIn = `-- name: DisableServiceCatalogEntriesNotIn :exec
+UPDATE service_catalog
+SET enabled = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+`
+
+type DisableServiceCatalogEntriesNotInParams struct {
+	ServiceIds []string `db:"service_ids" json:"service_ids"`
+}
+
+// DisableServiceCatalogEntriesNotIn
+//
+//	UPDATE service_catalog
+//	SET enabled = 0,
+//	    updated_at = CURRENT_TIMESTAMP
+//	WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+func (q *Queries) DisableServiceCatalogEntriesNotIn(ctx context.Context, arg DisableServiceCatalogEntriesNotInParams) error {
+	query := DisableServiceCatalogEntriesNotIn
+	var queryParams []interface{}
+	if len(arg.ServiceIds) > 0 {
+		for _, v := range arg.ServiceIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:service_ids*/?", strings.Repeat(",?", len(arg.ServiceIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:service_ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
 
 const ListEnabledServiceCatalog = `-- name: ListEnabledServiceCatalog :many
 SELECT service_id,
@@ -139,6 +172,7 @@ ON CONFLICT(service_id) DO UPDATE SET
     resource_profile = excluded.resource_profile,
     persistence_policy = excluded.persistence_policy,
     adapter_requirement = excluded.adapter_requirement,
+    enabled = excluded.enabled,
     secret_contract = excluded.secret_contract,
     updated_at = CURRENT_TIMESTAMP
 `
@@ -208,6 +242,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    resource_profile = excluded.resource_profile,
 //	    persistence_policy = excluded.persistence_policy,
 //	    adapter_requirement = excluded.adapter_requirement,
+//	    enabled = excluded.enabled,
 //	    secret_contract = excluded.secret_contract,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error {

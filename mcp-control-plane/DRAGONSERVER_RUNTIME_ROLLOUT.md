@@ -24,9 +24,9 @@ Use the public repo-backed Coolify pattern already proven by existing public app
 - `base_directory`: `/`
 - `git_commit_sha`: `HEAD` during initial rollout, then freeze to a specific SHA before cutover
 - preferred import path in the standalone public runtime repo: `/docker-compose.yaml`
-- equivalent path in this parent repository checkout: `/mcp-platform/docker-compose.yaml`
+- equivalent repo-relative path in this parent repository checkout: `mcp-platform/docker-compose.yaml`
 - explicit artifact path in the standalone public runtime repo: `/deploy/coolify/mcp-platform-core.compose.yaml`
-- equivalent explicit artifact path in this parent repository checkout: `/mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`
+- equivalent repo-relative explicit artifact path in this parent repository checkout: `mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`
 
 Use separate compose files only when intentionally splitting the core stack into distinct Coolify applications.
 

@@ -434,7 +434,7 @@ func (q *Queries) GetBrowserSession(ctx context.Context, arg GetBrowserSessionPa
 }
 
 const GetOAuthClient = `-- name: GetOAuthClient :one
-SELECT redirect_uris, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 FROM oauth_clients
 WHERE client_id = ?1
 `
@@ -445,6 +445,7 @@ type GetOAuthClientParams struct {
 
 type GetOAuthClientRow struct {
 	RedirectUris            string         `db:"redirect_uris" json:"redirect_uris"`
+	Scopes                  string         `db:"scopes" json:"scopes"`
 	CreatedBySubjectSub     sql.NullString `db:"created_by_subject_sub" json:"created_by_subject_sub"`
 	TokenEndpointAuthMethod string         `db:"token_endpoint_auth_method" json:"token_endpoint_auth_method"`
 	ClientSecretHash        sql.NullString `db:"client_secret_hash" json:"client_secret_hash"`
@@ -453,7 +454,7 @@ type GetOAuthClientRow struct {
 
 // GetOAuthClient
 //
-//	SELECT redirect_uris, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+//	SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 //	FROM oauth_clients
 //	WHERE client_id = ?1
 func (q *Queries) GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) (GetOAuthClientRow, error) {
@@ -461,6 +462,7 @@ func (q *Queries) GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) 
 	var i GetOAuthClientRow
 	err := row.Scan(
 		&i.RedirectUris,
+		&i.Scopes,
 		&i.CreatedBySubjectSub,
 		&i.TokenEndpointAuthMethod,
 		&i.ClientSecretHash,
@@ -511,6 +513,74 @@ type GetOAuthSessionByAccessHashRow struct {
 func (q *Queries) GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthSessionByAccessHashParams) (GetOAuthSessionByAccessHashRow, error) {
 	row := q.db.QueryRowContext(ctx, GetOAuthSessionByAccessHash, arg.AccessTokenHash)
 	var i GetOAuthSessionByAccessHashRow
+	err := row.Scan(
+		&i.SessionID,
+		&i.SubjectSub,
+		&i.ClientID,
+		&i.ServiceID,
+		&i.RedirectUri,
+		&i.Scope,
+		&i.CodeChallenge,
+		&i.CodeChallengeMethod,
+		&i.AuthorizationCodeHash,
+		&i.AuthorizationCodeCiphertext,
+		&i.AccessTokenHash,
+		&i.AccessTokenCiphertext,
+		&i.RefreshTokenHash,
+		&i.RefreshTokenCiphertext,
+		&i.CodeCreateAt,
+		&i.CodeExpiresInSeconds,
+		&i.AccessCreateAt,
+		&i.AccessExpiresInSeconds,
+		&i.RefreshCreateAt,
+		&i.RefreshExpiresInSeconds,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const GetOAuthSessionByRefreshHash = `-- name: GetOAuthSessionByRefreshHash :one
+SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+FROM oauth_sessions
+WHERE refresh_token_hash = ?1
+`
+
+type GetOAuthSessionByRefreshHashParams struct {
+	RefreshTokenHash sql.NullString `db:"refresh_token_hash" json:"refresh_token_hash"`
+}
+
+type GetOAuthSessionByRefreshHashRow struct {
+	SessionID                   []byte         `db:"session_id" json:"session_id"`
+	SubjectSub                  sql.NullString `db:"subject_sub" json:"subject_sub"`
+	ClientID                    string         `db:"client_id" json:"client_id"`
+	ServiceID                   sql.NullString `db:"service_id" json:"service_id"`
+	RedirectUri                 string         `db:"redirect_uri" json:"redirect_uri"`
+	Scope                       string         `db:"scope" json:"scope"`
+	CodeChallenge               sql.NullString `db:"code_challenge" json:"code_challenge"`
+	CodeChallengeMethod         sql.NullString `db:"code_challenge_method" json:"code_challenge_method"`
+	AuthorizationCodeHash       sql.NullString `db:"authorization_code_hash" json:"authorization_code_hash"`
+	AuthorizationCodeCiphertext []byte         `db:"authorization_code_ciphertext" json:"authorization_code_ciphertext"`
+	AccessTokenHash             sql.NullString `db:"access_token_hash" json:"access_token_hash"`
+	AccessTokenCiphertext       []byte         `db:"access_token_ciphertext" json:"access_token_ciphertext"`
+	RefreshTokenHash            sql.NullString `db:"refresh_token_hash" json:"refresh_token_hash"`
+	RefreshTokenCiphertext      []byte         `db:"refresh_token_ciphertext" json:"refresh_token_ciphertext"`
+	CodeCreateAt                sql.NullString `db:"code_create_at" json:"code_create_at"`
+	CodeExpiresInSeconds        int64          `db:"code_expires_in_seconds" json:"code_expires_in_seconds"`
+	AccessCreateAt              sql.NullString `db:"access_create_at" json:"access_create_at"`
+	AccessExpiresInSeconds      int64          `db:"access_expires_in_seconds" json:"access_expires_in_seconds"`
+	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
+	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
+	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+}
+
+// GetOAuthSessionByRefreshHash
+//
+//	SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	FROM oauth_sessions
+//	WHERE refresh_token_hash = ?1
+func (q *Queries) GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuthSessionByRefreshHashParams) (GetOAuthSessionByRefreshHashRow, error) {
+	row := q.db.QueryRowContext(ctx, GetOAuthSessionByRefreshHash, arg.RefreshTokenHash)
+	var i GetOAuthSessionByRefreshHashRow
 	err := row.Scan(
 		&i.SessionID,
 		&i.SubjectSub,

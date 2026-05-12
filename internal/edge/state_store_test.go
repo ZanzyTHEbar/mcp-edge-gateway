@@ -95,6 +95,7 @@ func TestMemoryEdgeStateStoreRoundTrip(t *testing.T) {
 		ResponseTypes:           []string{"code"},
 		TokenEndpointAuthMethod: tokenEndpointAuthMethodClientBasic,
 		Secret:                  "super-secret",
+		Scopes:                  []string{"mcp:mealie"},
 	}
 	require.NoError(t, storeValue.CreateClient(context.Background(), client, claims.Sub))
 

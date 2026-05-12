@@ -112,6 +112,13 @@ type Querier interface {
 	//
 	//  DELETE FROM tenant_instances WHERE tenant_id = ?1
 	DeleteTenantInstance(ctx context.Context, arg DeleteTenantInstanceParams) error
+	//DisableServiceCatalogEntriesNotIn
+	//
+	//  UPDATE service_catalog
+	//  SET enabled = 0,
+	//      updated_at = CURRENT_TIMESTAMP
+	//  WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+	DisableServiceCatalogEntriesNotIn(ctx context.Context, arg DisableServiceCatalogEntriesNotInParams) error
 	//EdgeUpsertSubject
 	//
 	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
@@ -144,7 +151,7 @@ type Querier interface {
 	GetBrowserSession(ctx context.Context, arg GetBrowserSessionParams) (GetBrowserSessionRow, error)
 	//GetOAuthClient
 	//
-	//  SELECT redirect_uris, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+	//  SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 	//  FROM oauth_clients
 	//  WHERE client_id = ?1
 	GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) (GetOAuthClientRow, error)
@@ -154,6 +161,12 @@ type Querier interface {
 	//  FROM oauth_sessions
 	//  WHERE access_token_hash = ?1
 	GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthSessionByAccessHashParams) (GetOAuthSessionByAccessHashRow, error)
+	//GetOAuthSessionByRefreshHash
+	//
+	//  SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  FROM oauth_sessions
+	//  WHERE refresh_token_hash = ?1
+	GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuthSessionByRefreshHashParams) (GetOAuthSessionByRefreshHashRow, error)
 	//GetPendingLogin
 	//
 	//  SELECT state, return_to, nonce, expires_at
@@ -369,6 +382,7 @@ type Querier interface {
 	//      resource_profile = excluded.resource_profile,
 	//      persistence_policy = excluded.persistence_policy,
 	//      adapter_requirement = excluded.adapter_requirement,
+	//      enabled = excluded.enabled,
 	//      secret_contract = excluded.secret_contract,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error

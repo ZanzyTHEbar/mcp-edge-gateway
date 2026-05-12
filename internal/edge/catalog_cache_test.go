@@ -57,6 +57,13 @@ func TestCatalogSnapshotRejectsReservedPublicPath(t *testing.T) {
 	require.ErrorContains(t, err, "conflicts with a reserved edge route")
 }
 
+func TestCatalogSnapshotRejectsInvalidServiceID(t *testing.T) {
+	t.Parallel()
+
+	_, err := newCatalogSnapshot([]catalog.ServiceCatalogEntry{{ServiceID: "bad service/id", PublicPath: "/bad/mcp"}}, time.Now().UTC())
+	require.ErrorContains(t, err, "invalid service_id")
+}
+
 func TestServerHandlerUsesRefreshedCatalogWithoutRebuild(t *testing.T) {
 	t.Parallel()
 

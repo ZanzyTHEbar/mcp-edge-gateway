@@ -66,5 +66,12 @@ ON CONFLICT(service_id) DO UPDATE SET
     resource_profile = excluded.resource_profile,
     persistence_policy = excluded.persistence_policy,
     adapter_requirement = excluded.adapter_requirement,
+    enabled = excluded.enabled,
     secret_contract = excluded.secret_contract,
     updated_at = CURRENT_TIMESTAMP;
+
+-- name: DisableServiceCatalogEntriesNotIn :exec
+UPDATE service_catalog
+SET enabled = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE service_id NOT IN (sqlc.slice(service_ids));

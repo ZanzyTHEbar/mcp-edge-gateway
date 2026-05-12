@@ -54,6 +54,30 @@ func TestConfigValidateAllowsCompleteTenantRuntimeConfig(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+func TestConfigValidateRequiresImmutableTenantImagesInProduction(t *testing.T) {
+	t.Parallel()
+
+	cfg := validTenantRuntimeControlPlaneConfig()
+	cfg.PlatformEnv = "production"
+	cfg.TenantImageMealie = "ghcr.io/example/mealie:latest"
+	cfg.TenantImageActualBudget = "ghcr.io/example/actual@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cfg.TenantImageMemory = "ghcr.io/example/memory@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE must use an immutable digest")
+
+	cfg.TenantImageMealie = "ghcr.io/example/mealie"
+	err = cfg.Validate()
+	require.ErrorContains(t, err, "MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE must use an immutable digest")
+
+	cfg.TenantImageMealie = "ghcr.io/example/mealie:v1.2.3"
+	err = cfg.Validate()
+	require.ErrorContains(t, err, "MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE must use an immutable digest")
+
+	cfg.TenantImageMealie = "ghcr.io/example/mealie@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	require.NoError(t, cfg.Validate())
+}
+
 func validBaseControlPlaneConfig() Config {
 	return Config{
 		DatabaseURL:         "file:data/mcp-platform.db",

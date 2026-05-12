@@ -83,6 +83,8 @@ type tokenIntrospectionResponse struct {
 	Iat       int64  `json:"iat,omitempty"`
 }
 
+type refreshClientIDContextKey struct{}
+
 func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCache, stateStore edgeStateStore, grants GrantAuthorizer, browserAuth *AuthRuntime) (*OAuthService, error) {
 	if stateStore == nil {
 		return nil, fmt.Errorf("edge oauth state store is required")
@@ -119,7 +121,16 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 		return subject.Sub, nil
 	})
 	srv.SetClientScopeHandler(func(tgr *oauth2.TokenGenerateRequest) (bool, error) {
-		return scopeStringAllowed(tgr.Scope, catalogCache.Scopes()), nil
+		if !scopeStringAllowed(tgr.Scope, catalogCache.Scopes()) {
+			return false, nil
+		}
+		lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		clientInfo, err := stateStore.GetByID(lookupCtx, tgr.ClientID)
+		if err != nil {
+			return false, err
+		}
+		return clientAllowsScope(clientInfo, tgr.Scope), nil
 	})
 
 	return &OAuthService{
@@ -313,6 +324,46 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	clientInfo, err := o.stateStore.GetByID(r.Context(), r.FormValue("client_id"))
+	if err != nil {
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: subject.Sub,
+			EventType:       "oauth.authorize.denied",
+			EventStatus:     "invalid_client",
+			Payload: map[string]any{
+				"client_id": r.FormValue("client_id"),
+				"scope":     r.FormValue("scope"),
+			},
+		})
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "OAuth client is not registered or is disabled")
+		return
+	}
+	if !clientAllowsScope(clientInfo, r.FormValue("scope")) {
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: subject.Sub,
+			EventType:       "oauth.authorize.denied",
+			EventStatus:     "invalid_scope",
+			Payload: map[string]any{
+				"client_id": r.FormValue("client_id"),
+				"scope":     r.FormValue("scope"),
+			},
+		})
+		writeJSONError(w, http.StatusForbidden, "invalid_scope", "requested scope is not registered for this OAuth client")
+		return
+	}
+	if err := o.server.HandleAuthorizeRequest(w, r); err != nil {
+		o.logger.Error().Err(err).Msg("oauth authorize request failed")
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: subject.Sub,
+			EventType:       "oauth.authorize.denied",
+			EventStatus:     "oauth_server_rejected",
+			Payload: map[string]any{
+				"client_id": r.FormValue("client_id"),
+				"scope":     r.FormValue("scope"),
+			},
+		})
+		return
+	}
 	o.recordAuditEvent(r.Context(), edgeAuditEvent{
 		ActorSubjectSub: subject.Sub,
 		EventType:       "oauth.authorize.allowed",
@@ -322,10 +373,6 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			"scope":     r.FormValue("scope"),
 		},
 	})
-
-	if err := o.server.HandleAuthorizeRequest(w, r); err != nil {
-		o.logger.Error().Err(err).Msg("oauth authorize request failed")
-	}
 }
 
 func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -334,24 +381,48 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "token exchange requires POST")
 		return
 	}
-	if err := o.prevalidateRefreshClient(r); err != nil {
+	refreshClientID, err := o.prevalidateRefreshClient(r)
+	if err != nil {
 		o.logger.Warn().Err(err).Msg("refresh token client prevalidation failed")
 		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
+	if refreshClientID != "" {
+		r = r.WithContext(context.WithValue(r.Context(), refreshClientIDContextKey{}, refreshClientID))
+	}
+	auditClientID := refreshClientID
+	if auditClientID == "" {
+		if clientID, _, err := resolveClientCredentials(r); err == nil {
+			auditClientID = clientID
+		}
+	}
 
-	if err := o.server.HandleTokenRequest(w, r); err != nil {
+	tracker := &statusTrackingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	if err := o.server.HandleTokenRequest(tracker, r); err != nil {
 		o.logger.Error().Err(err).Msg("oauth token request failed")
+		return
+	}
+	if tracker.statusCode < http.StatusOK || tracker.statusCode >= http.StatusMultipleChoices {
 		return
 	}
 	o.recordAuditEvent(r.Context(), edgeAuditEvent{
 		EventType:   "oauth.token.issued",
 		EventStatus: "issued",
 		Payload: map[string]any{
-			"client_id":  r.FormValue("client_id"),
+			"client_id":  auditClientID,
 			"grant_type": r.FormValue("grant_type"),
 		},
 	})
+}
+
+type statusTrackingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *statusTrackingResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +515,17 @@ func scopeStringAllowed(scope string, allowed []string) bool {
 		}
 	}
 	return true
+}
+
+func clientAllowsScope(clientInfo oauth2.ClientInfo, scope string) bool {
+	if strings.TrimSpace(scope) == "" {
+		return true
+	}
+	clientScopes, ok := clientInfo.(scopedClient)
+	if !ok {
+		return false
+	}
+	return scopeStringAllowed(scope, clientScopes.AllowedScopes())
 }
 
 func normalizeClientRegistration(req clientRegistrationRequest, allowedScopes []string) (registeredClient, error) {
@@ -582,32 +664,32 @@ func resolveIntrospectionToken(r *http.Request) (string, error) {
 	return "", fmt.Errorf("token is required")
 }
 
-func (o *OAuthService) prevalidateRefreshClient(r *http.Request) error {
+func (o *OAuthService) prevalidateRefreshClient(r *http.Request) (string, error) {
 	if err := r.ParseForm(); err != nil {
-		return fmt.Errorf("parse token form: %w", err)
+		return "", fmt.Errorf("parse token form: %w", err)
 	}
 	if r.Form.Get("grant_type") != "refresh_token" {
-		return nil
+		return "", nil
 	}
 	clientID, clientSecret, err := resolveClientCredentials(r)
 	if err != nil {
-		return err
+		return "", err
 	}
 	clientInfo, err := o.stateStore.GetByID(r.Context(), clientID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if verifier, ok := clientInfo.(oauth2.ClientPasswordVerifier); ok {
 		if !verifier.VerifyPassword(clientSecret) {
-			return fmt.Errorf("refresh client secret is invalid")
+			return "", fmt.Errorf("refresh client secret is invalid")
 		}
-		return nil
+		return clientID, nil
 	}
 	if clientInfo.GetSecret() != "" && clientInfo.GetSecret() != clientSecret {
-		return fmt.Errorf("refresh client secret is invalid")
+		return "", fmt.Errorf("refresh client secret is invalid")
 	}
 	if clientInfo.IsPublic() && strings.TrimSpace(clientSecret) != "" {
-		return fmt.Errorf("public refresh clients must not send a client secret")
+		return "", fmt.Errorf("public refresh clients must not send a client secret")
 	}
-	return nil
+	return clientID, nil
 }

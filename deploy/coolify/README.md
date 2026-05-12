@@ -25,11 +25,11 @@ This directory contains the deployment artifacts for the MCP platform core servi
 
 When importing the standalone public runtime repo (`ZanzyTHEbar/dragonserver-mcp-platform-runtime`) into Coolify, prefer the repository-root `docker-compose.yaml`.
 
-In this parent repository checkout, the equivalent file lives at `mcp-platform/docker-compose.yaml`.
+In this parent repository checkout, the equivalent repo-relative file lives at `mcp-platform/docker-compose.yaml`.
 
 Use `deploy/coolify/mcp-platform-core.compose.yaml` when you want the explicit deployment artifact path instead of the root convenience file.
 
-In this parent repository checkout, the equivalent explicit artifact path is `mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`.
+In this parent repository checkout, the equivalent repo-relative explicit artifact path is `mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`.
 
 That keeps the SQLite/libSQL-backed control plane and edge in one discoverable core stack while still allowing the control plane to create per-tenant Coolify services dynamically.
 
@@ -132,9 +132,11 @@ file:/data/mcp-platform/mcp-platform.db
 
 Both core services mount the same `mcp-platform-data` volume at `/data/mcp-platform`.
 
+When the core services are imported as separate Coolify applications, this shared storage depends on the globally named Docker volume `mcp-platform-data`; do not allow Coolify to auto-generate per-application volume names.
+
 ## Deployment Order
 
-For separate service imports, deploy in this order:
+For separate service imports, first ensure the `mcp-platform-data` volume exists and is mounted, then deploy in this order:
 
 1. `mcp-control-plane`
 2. `mcp-edge`

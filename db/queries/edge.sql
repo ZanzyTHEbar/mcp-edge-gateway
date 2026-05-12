@@ -3,7 +3,7 @@ INSERT INTO oauth_clients (client_id, client_name, created_by_subject_sub, redir
 VALUES (sqlc.arg(client_id), sqlc.arg(client_name), NULLIF(sqlc.arg(created_by_subject_sub), ''), sqlc.arg(redirect_uris), sqlc.arg(grant_types), sqlc.arg(response_types), sqlc.arg(scopes), sqlc.arg(token_endpoint_auth_method), sqlc.narg(client_secret_hash), '{}', sqlc.arg(created_at), sqlc.arg(created_at));
 
 -- name: GetOAuthClient :one
-SELECT redirect_uris, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 FROM oauth_clients
 WHERE client_id = sqlc.arg(client_id);
 
@@ -47,6 +47,11 @@ DELETE FROM oauth_sessions WHERE refresh_token_hash = sqlc.arg(refresh_token_has
 SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 FROM oauth_sessions
 WHERE access_token_hash = sqlc.arg(access_token_hash);
+
+-- name: GetOAuthSessionByRefreshHash :one
+SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+FROM oauth_sessions
+WHERE refresh_token_hash = sqlc.arg(refresh_token_hash);
 
 -- name: ConsumeOAuthSessionByCodeHash :one
 UPDATE oauth_sessions

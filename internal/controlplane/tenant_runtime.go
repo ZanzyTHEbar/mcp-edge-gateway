@@ -291,6 +291,8 @@ func (r *CoolifyTenantRuntime) delete(ctx context.Context, tenant TenantInstance
 		deleteRequeued = true
 	}
 	if shouldQueueDelete {
+		// Tenant deletion is intentionally destructive: desired_state=deleted is the
+		// operator confirmation boundary, so Coolify volumes/configuration are removed.
 		if _, err := r.coolify.DeleteService(ctx, tenant.CoolifyResourceID, CoolifyDeleteServiceOptions{
 			DeleteConfigurations:    true,
 			DeleteVolumes:           true,

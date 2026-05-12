@@ -186,8 +186,39 @@ func (c Config) validateTenantRuntimeConfig() error {
 	if c.ActualServerURL == "" {
 		return fmt.Errorf("%s is required when tenant runtime is enabled", contracts.EnvControlPlaneActualServerURL)
 	}
+	if strings.EqualFold(c.PlatformEnv, "production") {
+		for _, image := range []struct {
+			envKey string
+			value  string
+		}{
+			{envKey: contracts.EnvControlPlaneTenantImageMealie, value: c.TenantImageMealie},
+			{envKey: contracts.EnvControlPlaneTenantImageActualBudget, value: c.TenantImageActualBudget},
+			{envKey: contracts.EnvControlPlaneTenantImageMemory, value: c.TenantImageMemory},
+		} {
+			if image.value == "" {
+				return fmt.Errorf("%s is required in production when tenant runtime is enabled", image.envKey)
+			}
+			if !hasImmutableImageDigest(image.value) {
+				return fmt.Errorf("%s must use an immutable digest in production", image.envKey)
+			}
+		}
+	}
 
 	return nil
+}
+
+func hasImmutableImageDigest(image string) bool {
+	image = strings.TrimSpace(image)
+	_, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || len(digest) != 64 {
+		return false
+	}
+	for _, r := range digest {
+		if !('0' <= r && r <= '9') && !('a' <= r && r <= 'f') && !('A' <= r && r <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c Config) HasDependencyConfig() bool {

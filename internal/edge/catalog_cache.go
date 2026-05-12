@@ -3,6 +3,7 @@ package edge
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -14,6 +15,8 @@ import (
 )
 
 const edgeCatalogRefreshInterval = 15 * time.Second
+
+var serviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 type CatalogSnapshot struct {
 	entries      []catalog.ServiceCatalogEntry
@@ -131,6 +134,9 @@ func newCatalogSnapshot(entries []catalog.ServiceCatalogEntry, loadedAt time.Tim
 		serviceID := strings.TrimSpace(entry.ServiceID)
 		if serviceID == "" {
 			return nil, fmt.Errorf("service catalog entry has empty service_id")
+		}
+		if !serviceIDPattern.MatchString(serviceID) {
+			return nil, fmt.Errorf("service catalog entry has invalid service_id %q", serviceID)
 		}
 		if _, exists := snapshot.byServiceID[serviceID]; exists {
 			return nil, fmt.Errorf("duplicate service catalog service_id %q", serviceID)
