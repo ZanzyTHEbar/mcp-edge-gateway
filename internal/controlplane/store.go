@@ -310,10 +310,6 @@ func (s *Store) UpdateTenantRuntimeStatus(ctx context.Context, update TenantRunt
 	if update.LastHealthyAt != nil {
 		lastHealthyAt = formatSQLiteTime(*update.LastHealthyAt)
 	}
-	clearRuntimeReferences := sql.NullString{String: "0", Valid: true}
-	if update.ClearRuntimeReferences {
-		clearRuntimeReferences.String = "1"
-	}
 	if err := s.queries.UpdateTenantRuntimeStatus(ctx, platformdb.UpdateTenantRuntimeStatusParams{
 		TenantID:               update.TenantID.Bytes(),
 		RuntimeState:           string(update.RuntimeState),
@@ -321,7 +317,7 @@ func (s *Store) UpdateTenantRuntimeStatus(ctx context.Context, update TenantRunt
 		CoolifyApplicationID:   update.CoolifyApplicationID,
 		UpstreamUrl:            update.UpstreamURL,
 		LastHealthyAt:          lastHealthyAt,
-		ClearRuntimeReferences: clearRuntimeReferences,
+		ClearRuntimeReferences: update.ClearRuntimeReferences,
 		LastError:              update.LastError,
 	}); err != nil {
 		return fmt.Errorf("update tenant runtime status for %s: %w", update.TenantID, err)

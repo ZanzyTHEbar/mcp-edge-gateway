@@ -30,8 +30,8 @@ type FixtureResolver struct {
 }
 
 type DatabaseResolver struct {
-	services map[string]catalog.ServiceCatalogEntry
-	queries  *platformdb.Queries
+	catalog *CatalogCache
+	queries *platformdb.Queries
 }
 
 func NewFixtureResolver(cfg Config) (*FixtureResolver, error) {
@@ -58,26 +58,25 @@ func NewFixtureResolver(cfg Config) (*FixtureResolver, error) {
 	}, nil
 }
 
-func NewDatabaseResolver(entries []catalog.ServiceCatalogEntry, stateStore edgeStateStore) (*DatabaseResolver, error) {
+func NewDatabaseResolver(catalogCache *CatalogCache, stateStore edgeStateStore) (*DatabaseResolver, error) {
+	if catalogCache == nil {
+		return nil, fmt.Errorf("database resolver requires catalog cache")
+	}
 	sqliteStore, ok := stateStore.(*sqliteEdgeStateStore)
 	if !ok {
 		return nil, fmt.Errorf("database resolver requires sqlite-backed edge state")
 	}
-	services := make(map[string]catalog.ServiceCatalogEntry, len(entries))
-	for _, entry := range entries {
-		services[entry.ServiceID] = entry
-	}
 	return &DatabaseResolver{
-		services: services,
-		queries:  sqliteStore.queries,
+		catalog: catalogCache,
+		queries: sqliteStore.queries,
 	}, nil
 }
 
-func buildDefaultResolver(cfg Config, entries []catalog.ServiceCatalogEntry, stateStore edgeStateStore) (Resolver, error) {
+func buildDefaultResolver(cfg Config, catalogCache *CatalogCache, stateStore edgeStateStore) (Resolver, error) {
 	if cfg.EnableFixtureMode {
 		return NewFixtureResolver(cfg)
 	}
-	return NewDatabaseResolver(entries, stateStore)
+	return NewDatabaseResolver(catalogCache, stateStore)
 }
 
 func (r *FixtureResolver) Resolve(_ context.Context, serviceID string, _ string) (UpstreamTarget, error) {
@@ -98,7 +97,7 @@ func (r *FixtureResolver) Resolve(_ context.Context, serviceID string, _ string)
 }
 
 func (r *DatabaseResolver) Resolve(ctx context.Context, serviceID string, subjectSub string) (UpstreamTarget, error) {
-	service, ok := r.services[serviceID]
+	service, ok := r.catalog.ServiceByID(serviceID)
 	if !ok {
 		return UpstreamTarget{}, ErrServiceNotFound
 	}

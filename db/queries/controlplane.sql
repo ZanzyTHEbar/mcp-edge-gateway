@@ -92,7 +92,7 @@ WHERE tenant_id = sqlc.arg(tenant_id);
 -- name: UpdateTenantRuntimeStatus :exec
 UPDATE tenant_instances
 SET runtime_state = sqlc.arg(runtime_state),
-    coolify_resource_id = CASE WHEN sqlc.arg(clear_runtime_references) THEN NULL WHEN sqlc.arg(coolify_resource_id) = '' THEN coolify_resource_id ELSE sqlc.arg(coolify_resource_id) END,
+    coolify_resource_id = CASE WHEN CAST(sqlc.arg(clear_runtime_references) AS boolean) THEN NULL WHEN sqlc.arg(coolify_resource_id) = '' THEN coolify_resource_id ELSE sqlc.arg(coolify_resource_id) END,
     coolify_application_id = CASE WHEN sqlc.arg(clear_runtime_references) THEN NULL WHEN sqlc.arg(coolify_application_id) = '' THEN coolify_application_id ELSE sqlc.arg(coolify_application_id) END,
     upstream_url = CASE WHEN sqlc.arg(clear_runtime_references) THEN NULL WHEN sqlc.arg(upstream_url) = '' THEN upstream_url ELSE sqlc.arg(upstream_url) END,
     last_healthy_at = CASE WHEN sqlc.arg(clear_runtime_references) THEN NULL WHEN sqlc.narg(last_healthy_at) IS NULL THEN last_healthy_at ELSE sqlc.narg(last_healthy_at) END,

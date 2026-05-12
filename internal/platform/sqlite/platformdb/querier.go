@@ -285,7 +285,7 @@ type Querier interface {
 	//
 	//  UPDATE tenant_instances
 	//  SET runtime_state = ?1,
-	//      coolify_resource_id = CASE WHEN ?2 THEN NULL WHEN ?3 = '' THEN coolify_resource_id ELSE ?3 END,
+	//      coolify_resource_id = CASE WHEN CAST(?2 AS boolean) THEN NULL WHEN ?3 = '' THEN coolify_resource_id ELSE ?3 END,
 	//      coolify_application_id = CASE WHEN ?2 THEN NULL WHEN ?4 = '' THEN coolify_application_id ELSE ?4 END,
 	//      upstream_url = CASE WHEN ?2 THEN NULL WHEN ?5 = '' THEN upstream_url ELSE ?5 END,
 	//      last_healthy_at = CASE WHEN ?2 THEN NULL WHEN ?6 IS NULL THEN last_healthy_at ELSE ?6 END,

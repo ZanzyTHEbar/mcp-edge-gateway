@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"dragonserver/mcp-platform/internal/catalog"
 	"dragonserver/mcp-platform/internal/ids"
 
 	oauth2 "github.com/go-oauth2/oauth2/v4"
@@ -32,7 +31,7 @@ type OAuthService struct {
 	logger        zerolog.Logger
 	publicBaseURL string
 	operatorToken string
-	serviceScopes []string
+	catalog       *CatalogCache
 	grants        GrantAuthorizer
 	browserAuth   *AuthRuntime
 	stateStore    edgeStateStore
@@ -84,11 +83,13 @@ type tokenIntrospectionResponse struct {
 	Iat       int64  `json:"iat,omitempty"`
 }
 
-func NewOAuthService(cfg Config, logger zerolog.Logger, entries []catalog.ServiceCatalogEntry, stateStore edgeStateStore, grants GrantAuthorizer, browserAuth *AuthRuntime) (*OAuthService, error) {
+func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCache, stateStore edgeStateStore, grants GrantAuthorizer, browserAuth *AuthRuntime) (*OAuthService, error) {
 	if stateStore == nil {
 		return nil, fmt.Errorf("edge oauth state store is required")
 	}
-	serviceScopes := buildOAuthScopes(entries)
+	if catalogCache == nil {
+		return nil, fmt.Errorf("edge oauth catalog cache is required")
+	}
 	operatorToken, err := resolveConfiguredSecret(cfg.OperatorTokenPath, cfg.FixtureOperatorToken)
 	if err != nil {
 		return nil, err
@@ -118,14 +119,14 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, entries []catalog.Servic
 		return subject.Sub, nil
 	})
 	srv.SetClientScopeHandler(func(tgr *oauth2.TokenGenerateRequest) (bool, error) {
-		return scopeStringAllowed(tgr.Scope, serviceScopes), nil
+		return scopeStringAllowed(tgr.Scope, catalogCache.Scopes()), nil
 	})
 
 	return &OAuthService{
 		logger:        logger,
 		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 		operatorToken: operatorToken,
-		serviceScopes: serviceScopes,
+		catalog:       catalogCache,
 		grants:        grants,
 		browserAuth:   browserAuth,
 		stateStore:    stateStore,
@@ -164,7 +165,7 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{tokenEndpointAuthMethodNone, tokenEndpointAuthMethodClientPost, tokenEndpointAuthMethodClientBasic},
-		"scopes_supported":                      o.serviceScopes,
+		"scopes_supported":                      o.catalog.Scopes(),
 	})
 }
 
@@ -178,7 +179,7 @@ func (o *OAuthService) handleProtectedResourceMetadata(w http.ResponseWriter, r 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource":                              o.publicBaseURL,
 		"authorization_servers":                 []string{o.publicBaseURL},
-		"scopes_supported":                      o.serviceScopes,
+		"scopes_supported":                      o.catalog.Scopes(),
 		"bearer_methods_supported":              []string{"header"},
 		"resource_documentation":                o.publicBaseURL + "/health",
 		"resource_name":                         "dragonserver-mcp-edge",
@@ -204,7 +205,7 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	record, err := normalizeClientRegistration(req, o.serviceScopes)
+	record, err := normalizeClientRegistration(req, o.catalog.Scopes())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
@@ -425,15 +426,6 @@ func resolveClientCredentials(r *http.Request) (string, string, error) {
 		return clientID, clientSecret, nil
 	}
 	return oauth2server.ClientFormHandler(r)
-}
-
-func buildOAuthScopes(entries []catalog.ServiceCatalogEntry) []string {
-	scopes := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		scopes = append(scopes, "mcp:"+entry.ServiceID)
-	}
-	slices.Sort(scopes)
-	return scopes
 }
 
 func scopeStringAllowed(scope string, allowed []string) bool {

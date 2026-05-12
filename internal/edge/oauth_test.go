@@ -367,15 +367,7 @@ func newTestEdgeServer(t *testing.T, resolver Resolver) *Server {
 	}
 
 	server, err := NewServer(
-		Config{
-			PlatformEnv:           "test",
-			PublicBaseURL:         "https://mcp.example.com",
-			CookieSecure:          false,
-			EnableFixtureMode:     true,
-			FixtureAuthSubjectSub: "fixture-user",
-			FixtureAuthGroups:     []string{"mcp-users", "mcp-service-mealie"},
-			FixtureOperatorToken:  "fixture-operator-token",
-		},
+		testEdgeConfig(),
 		zerolog.New(httptest.NewRecorder()),
 		resolver,
 	)

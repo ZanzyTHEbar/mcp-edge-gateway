@@ -26,8 +26,7 @@ type Server struct {
 	logger                    zerolog.Logger
 	publicURL                 string
 	resolver                  Resolver
-	services                  map[string]catalog.ServiceCatalogEntry
-	serviceList               []catalog.ServiceCatalogEntry
+	catalogCache              *CatalogCache
 	fixtureInsecureSkipVerify bool
 	stateStore                edgeStateStore
 	oauth                     *OAuthService
@@ -51,26 +50,22 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		}
 		stateStoreOwned = true
 	}
-	entries, err := stateStore.ListEnabledServiceCatalog(ctx)
-	if err != nil {
+	catalogCache := NewCatalogCache(stateStore, logger)
+	if err := catalogCache.Refresh(ctx); err != nil {
 		if stateStoreOwned {
 			_ = stateStore.Close()
 		}
 		return nil, err
 	}
-	if len(entries) == 0 {
+	if catalogCache.Len() == 0 {
 		if stateStoreOwned {
 			_ = stateStore.Close()
 		}
 		return nil, errors.New("no enabled services in service catalog")
 	}
-	services := make(map[string]catalog.ServiceCatalogEntry, len(entries))
-	for _, entry := range entries {
-		services[entry.ServiceID] = entry
-	}
 	if resolver == nil {
 		var err error
-		resolver, err = buildDefaultResolver(cfg, entries, stateStore)
+		resolver, err = buildDefaultResolver(cfg, catalogCache, stateStore)
 		if err != nil {
 			if stateStoreOwned {
 				_ = stateStore.Close()
@@ -86,7 +81,7 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		}
 		return nil, err
 	}
-	oauthService, err := NewOAuthService(cfg, logger, entries, stateStore, authRuntime, authRuntime)
+	oauthService, err := NewOAuthService(cfg, logger, catalogCache, stateStore, authRuntime, authRuntime)
 	if err != nil {
 		if stateStoreOwned {
 			_ = stateStore.Close()
@@ -98,8 +93,7 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		logger:                    logger,
 		publicURL:                 cfg.PublicBaseURL,
 		resolver:                  resolver,
-		services:                  services,
-		serviceList:               entries,
+		catalogCache:              catalogCache,
 		fixtureInsecureSkipVerify: cfg.FixtureInsecureSkipVerify,
 		stateStore:                stateStore,
 		auth:                      authRuntime,
@@ -121,11 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", s.handleReadiness)
 	s.auth.RegisterRoutes(mux)
 	s.oauth.RegisterRoutes(mux)
-	for _, service := range s.serviceList {
-		service := service
-		mux.HandleFunc(service.PublicPath, s.handleServiceRoute(service))
-		mux.HandleFunc(service.PublicPath+"/", s.handleServiceRoute(service))
-	}
+	mux.HandleFunc("/", s.handleServiceRequest)
 
 	return s.withRequestContext(mux)
 }
@@ -136,6 +126,7 @@ func (s *Server) ListenAndServe(ctx context.Context, cfg Config) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	go s.catalogCache.RunRefreshLoop(ctx, edgeCatalogRefreshInterval)
 
 	go func() {
 		<-ctx.Done()
@@ -167,21 +158,34 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	if s.stateStore != nil {
 		if err := s.stateStore.Ping(r.Context()); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"status":          "not_ready",
-				"public_base_url": s.publicURL,
-				"services":        len(s.serviceList),
-				"error":           "state_store_unavailable",
-				"ts":              time.Now().UTC(),
+				"status":            "not_ready",
+				"public_base_url":   s.publicURL,
+				"services":          s.catalogCache.Len(),
+				"catalog_loaded_at": s.catalogCache.LoadedAt(),
+				"catalog_error":     s.catalogCache.LastError(),
+				"error":             "state_store_unavailable",
+				"ts":                time.Now().UTC(),
 			})
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ready",
-		"public_base_url": s.publicURL,
-		"services":        len(s.serviceList),
-		"ts":              time.Now().UTC(),
+		"status":            "ready",
+		"public_base_url":   s.publicURL,
+		"services":          s.catalogCache.Len(),
+		"catalog_loaded_at": s.catalogCache.LoadedAt(),
+		"catalog_error":     s.catalogCache.LastError(),
+		"ts":                time.Now().UTC(),
 	})
+}
+
+func (s *Server) handleServiceRequest(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.catalogCache.MatchPublicPath(r.URL.Path)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
+	s.handleServiceRoute(service)(w, r)
 }
 
 func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.HandlerFunc {
