@@ -30,11 +30,12 @@ func RunMigrations(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("run sqlite migrations: %w", err)
 	}
 	var busy, logFrames, checkpointedFrames int
-	if err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
-		return fmt.Errorf("checkpoint sqlite database after migrations: %w", err)
-	}
-	if busy != 0 {
-		return fmt.Errorf("checkpoint sqlite database after migrations was busy: log=%d checkpointed=%d", logFrames, checkpointedFrames)
-	}
+	// A checkpoint is best-effort here: migrations are complete once goose commits.
+	// Edge/control-plane split deployments may legitimately keep another SQLite
+	// connection open, so checkpoint errors must not make startup fail.
+	_ = db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &logFrames, &checkpointedFrames)
+	_ = busy
+	_ = logFrames
+	_ = checkpointedFrames
 	return nil
 }

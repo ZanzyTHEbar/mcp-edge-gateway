@@ -84,6 +84,8 @@ Keep environment-specific rollout procedures, live hostnames, and operational id
 - `mcp-control-plane` is internal-only and must not receive a public domain
 - `mcp-edge` is the only core service that should receive the public MCP domain
 - goose SQLite/libSQL schema migrations are applied by `mcp-control-plane` on startup
+- run exactly one `mcp-control-plane` instance at a time; the DB lease cancels a process after leadership loss, but operators must not intentionally configure multiple replicas or run old and new control-plane deployments concurrently
+- migration version `000002` is intentionally unused in this public runtime line so deployments that recorded an earlier pre-release version 2 do not skip the lease migration at `000003`
 
 ## Required Coolify Configuration
 

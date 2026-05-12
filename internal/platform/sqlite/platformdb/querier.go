@@ -285,13 +285,13 @@ type Querier interface {
 	//
 	//  UPDATE tenant_instances
 	//  SET runtime_state = ?1,
-	//      coolify_resource_id = CASE WHEN ?2 = '' THEN coolify_resource_id ELSE ?2 END,
-	//      coolify_application_id = CASE WHEN ?3 = '' THEN coolify_application_id ELSE ?3 END,
-	//      upstream_url = CASE WHEN ?4 = '' THEN upstream_url ELSE ?4 END,
-	//      last_healthy_at = CASE WHEN ?5 IS NULL THEN last_healthy_at ELSE ?5 END,
-	//      last_error = NULLIF(?6, ''),
+	//      coolify_resource_id = CASE WHEN ?2 THEN NULL WHEN ?3 = '' THEN coolify_resource_id ELSE ?3 END,
+	//      coolify_application_id = CASE WHEN ?2 THEN NULL WHEN ?4 = '' THEN coolify_application_id ELSE ?4 END,
+	//      upstream_url = CASE WHEN ?2 THEN NULL WHEN ?5 = '' THEN upstream_url ELSE ?5 END,
+	//      last_healthy_at = CASE WHEN ?2 THEN NULL WHEN ?6 IS NULL THEN last_healthy_at ELSE ?6 END,
+	//      last_error = NULLIF(?7, ''),
 	//      updated_at = CURRENT_TIMESTAMP
-	//  WHERE tenant_id = ?7
+	//  WHERE tenant_id = ?8
 	UpdateTenantRuntimeStatus(ctx context.Context, arg UpdateTenantRuntimeStatusParams) error
 	//UpsertOAuthSession
 	//

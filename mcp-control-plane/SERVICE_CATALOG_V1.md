@@ -79,8 +79,9 @@ Logical secret contract:
 Behavior:
 
 - the upstream runtime remains SSE today
-- the edge terminates streamable HTTP and bridges requests to the upstream SSE MCP endpoint
-- this is not a full SSE-to-streamable-HTTP protocol bridge; if a client requires streamable HTTP semantics, keep `memory` disabled until a real bridge is implemented
+- the edge terminates streamable HTTP and bridges single JSON-RPC requests/notifications to the upstream SSE MCP endpoint
+- the bridge suppresses upstream `endpoint` events, rejects JSON-RPC batches, and fails closed on upstream protocol timeouts
+- this is still a targeted compatibility bridge rather than a general-purpose SSE-to-streamable-HTTP protocol converter
 
 ## 4. Adapter Rules
 
@@ -96,8 +97,8 @@ Behavior:
 
 ### 4.3 Memory
 
-- full SSE-to-streamable-HTTP bridging is implemented at the edge
-- full SSE-to-streamable-HTTP protocol conversion is not implemented today
+- targeted SSE-to-streamable-HTTP request bridging is implemented at the edge
+- full SSE-to-streamable-HTTP protocol conversion, including JSON-RPC batch aggregation, is not implemented today
 - no client may depend on the raw `/sse` public route after cutover
 
 ## 5. Operational Rules

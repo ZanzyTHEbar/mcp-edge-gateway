@@ -3,19 +3,26 @@ package edge
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 )
+
+const sseBridgeEndpointTimeout = 10 * time.Second
+
+const sseBridgeResponseTimeout = 30 * time.Second
 
 func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath string, insecureSkipVerify bool, logger zerolog.Logger) *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
@@ -37,7 +44,7 @@ func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath 
 			Str("path", r.URL.Path).
 			Str("method", r.Method).
 			Msg("edge proxy request failed")
-		writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", "unable to reach upstream tenant service")
+		writeUpstreamTransportError(w, err, "unable to reach upstream tenant service")
 	}
 	return proxy
 }
@@ -63,9 +70,20 @@ func bridgeStreamablePost(w http.ResponseWriter, r *http.Request, target *url.UR
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "unable to read request body")
 		return
 	}
+	if jsonRPCBatch(requestBody) {
+		writeJSONError(w, http.StatusBadRequest, "unsupported_batch", "memory bridge does not support JSON-RPC batch requests")
+		return
+	}
 	upstreamEndpoint, sseReader, closeSSE, err := openUpstreamSSEEndpoint(r, target, publicPath, upstreamPath, transport, logger)
 	if err != nil {
 		logger.Error().Err(err).Str("path", r.URL.Path).Msg("sse bridge failed to establish upstream session")
+		if isCanceledError(err) {
+			return
+		}
+		if isTimeoutError(err) {
+			writeJSONError(w, http.StatusGatewayTimeout, "upstream_protocol_timeout", "memory upstream timed out before exposing an SSE endpoint")
+			return
+		}
 		writeJSONError(w, http.StatusBadGateway, "upstream_protocol_error", "memory upstream did not expose a usable SSE endpoint")
 		return
 	}
@@ -85,7 +103,7 @@ func bridgeStreamablePost(w http.ResponseWriter, r *http.Request, target *url.UR
 	resp, err := transport.RoundTrip(postReq)
 	if err != nil {
 		logger.Error().Err(err).Str("path", r.URL.Path).Msg("sse bridge upstream POST failed")
-		writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", "unable to reach upstream tenant service")
+		writeUpstreamTransportError(w, err, "unable to reach upstream tenant service")
 		return
 	}
 	defer resp.Body.Close()
@@ -103,9 +121,16 @@ func bridgeStreamablePost(w http.ResponseWriter, r *http.Request, target *url.UR
 			return
 		}
 		var waitErr error
-		responseBody, waitErr = readSSEJSONRPCResponse(sseReader, requestBody)
+		responseBody, waitErr = readSSEJSONRPCResponse(r.Context(), sseReader, requestBody, closeSSE)
 		if waitErr != nil {
 			logger.Error().Err(waitErr).Str("path", r.URL.Path).Msg("sse bridge failed to read upstream JSON-RPC response")
+			if isCanceledError(waitErr) {
+				return
+			}
+			if isTimeoutError(waitErr) {
+				writeJSONError(w, http.StatusGatewayTimeout, "upstream_protocol_timeout", "memory upstream timed out before returning a JSON-RPC response")
+				return
+			}
 			writeJSONError(w, http.StatusBadGateway, "upstream_protocol_error", "memory upstream did not return a JSON-RPC response")
 			return
 		}
@@ -136,7 +161,7 @@ func bridgeStreamableGet(w http.ResponseWriter, r *http.Request, target *url.URL
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		logger.Error().Err(err).Str("path", r.URL.Path).Msg("sse bridge upstream GET failed")
-		writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", "unable to reach upstream tenant service")
+		writeUpstreamTransportError(w, err, "unable to reach upstream tenant service")
 		return
 	}
 	defer resp.Body.Close()
@@ -233,7 +258,7 @@ func openUpstreamSSEEndpoint(r *http.Request, target *url.URL, publicPath string
 		return nil, nil, nil, fmt.Errorf("upstream SSE returned content type %q", resp.Header.Get("Content-Type"))
 	}
 	reader := bufio.NewReader(resp.Body)
-	endpoint, err := readSSEEndpointEvent(reader)
+	endpoint, err := readSSEEndpointEvent(r.Context(), reader, closeSSE)
 	if err != nil {
 		closeSSE()
 		return nil, nil, nil, err
@@ -247,7 +272,30 @@ func openUpstreamSSEEndpoint(r *http.Request, target *url.URL, publicPath string
 	return endpointURL, reader, closeSSE, nil
 }
 
-func readSSEEndpointEvent(reader *bufio.Reader) (string, error) {
+func readSSEEndpointEvent(ctx context.Context, reader *bufio.Reader, closeSSE func()) (string, error) {
+	readCtx, cancel := context.WithTimeout(ctx, sseBridgeEndpointTimeout)
+	defer cancel()
+
+	type result struct {
+		endpoint string
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		endpoint, err := readSSEEndpointEventBlocking(reader)
+		resultCh <- result{endpoint: endpoint, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.endpoint, result.err
+	case <-readCtx.Done():
+		closeSSE()
+		return "", readCtx.Err()
+	}
+}
+
+func readSSEEndpointEventBlocking(reader *bufio.Reader) (string, error) {
 	expectEndpointData := false
 	for {
 		line, err := reader.ReadString('\n')
@@ -271,7 +319,30 @@ func readSSEEndpointEvent(reader *bufio.Reader) (string, error) {
 	}
 }
 
-func readSSEJSONRPCResponse(reader *bufio.Reader, requestBody []byte) ([]byte, error) {
+func readSSEJSONRPCResponse(ctx context.Context, reader *bufio.Reader, requestBody []byte, closeSSE func()) ([]byte, error) {
+	readCtx, cancel := context.WithTimeout(ctx, sseBridgeResponseTimeout)
+	defer cancel()
+
+	type result struct {
+		payload []byte
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		payload, err := readSSEJSONRPCResponseBlocking(reader, requestBody)
+		resultCh <- result{payload: payload, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.payload, result.err
+	case <-readCtx.Done():
+		closeSSE()
+		return nil, readCtx.Err()
+	}
+}
+
+func readSSEJSONRPCResponseBlocking(reader *bufio.Reader, requestBody []byte) ([]byte, error) {
 	requestID, hasRequestID := jsonRPCID(requestBody)
 	for {
 		line, err := reader.ReadString('\n')
@@ -295,6 +366,11 @@ func readSSEJSONRPCResponse(reader *bufio.Reader, requestBody []byte) ([]byte, e
 	}
 }
 
+func jsonRPCBatch(body []byte) bool {
+	var payload []json.RawMessage
+	return json.Unmarshal(body, &payload) == nil
+}
+
 func jsonRPCID(body []byte) (any, bool) {
 	var payload struct {
 		ID any `json:"id"`
@@ -303,6 +379,26 @@ func jsonRPCID(body []byte) (any, bool) {
 		return nil, false
 	}
 	return payload.ID, true
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isCanceledError(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+func writeUpstreamTransportError(w http.ResponseWriter, err error, message string) {
+	if isTimeoutError(err) {
+		writeJSONError(w, http.StatusGatewayTimeout, "upstream_timeout", message)
+		return
+	}
+	writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", message)
 }
 
 func normalizeUpstreamEndpoint(target *url.URL, endpoint string) (*url.URL, error) {
@@ -332,6 +428,7 @@ func newEdgeTransport(insecureSkipVerify bool) *http.Transport {
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: sseBridgeResponseTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    true,

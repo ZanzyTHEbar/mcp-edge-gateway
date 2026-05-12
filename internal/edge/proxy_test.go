@@ -2,6 +2,7 @@ package edge
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -142,4 +143,82 @@ func TestSSEToStreamableHTTPBridgeForwardsPostThroughUpstreamEndpoint(t *testing
 	require.Equal(t, http.StatusOK, res.Code)
 	require.Equal(t, "application/json", res.Header().Get("Content-Type"))
 	require.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`, res.Body.String())
+}
+
+func TestSSEToStreamableHTTPBridgeRejectsBatchRequests(t *testing.T) {
+	t.Parallel()
+
+	targetURL, err := url.Parse("http://127.0.0.1:1")
+	require.NoError(t, err)
+	handler := NewSSEToStreamableHTTPBridge(targetURL, "/memory/mcp", "/sse", false, zerolog.New(io.Discard))
+
+	req := httptest.NewRequest(http.MethodPost, "/memory/mcp", bytes.NewReader([]byte(`[ {"jsonrpc":"2.0","id":1,"method":"tools/list"} ]`)))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusBadRequest, res.Code)
+	require.Contains(t, res.Body.String(), "unsupported_batch")
+}
+
+func TestSSEToStreamableHTTPBridgeTimesOutWaitingForEndpoint(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/sse", r.URL.Path)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	handler := NewSSEToStreamableHTTPBridge(targetURL, "/memory/mcp", "/sse", false, zerolog.New(io.Discard))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/memory/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))).WithContext(ctx)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusGatewayTimeout, res.Code)
+	require.Contains(t, res.Body.String(), "upstream_protocol_timeout")
+}
+
+func TestSSEToStreamableHTTPBridgeTimesOutWaitingForResponse(t *testing.T) {
+	t.Parallel()
+
+	requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sse":
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			require.True(t, ok)
+			_, _ = io.WriteString(w, "event: endpoint\n")
+			_, _ = io.WriteString(w, "data: /message?sessionid=test-session\n\n")
+			flusher.Flush()
+			<-r.Context().Done()
+		case "/message":
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	handler := NewSSEToStreamableHTTPBridge(targetURL, "/memory/mcp", "/sse", false, zerolog.New(io.Discard))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/memory/mcp", bytes.NewReader(requestBody)).WithContext(ctx)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusGatewayTimeout, res.Code)
+	require.Contains(t, res.Body.String(), "upstream_protocol_timeout")
 }

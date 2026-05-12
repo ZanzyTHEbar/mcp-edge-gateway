@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -224,6 +225,38 @@ func TestReconcilerRunOnceSkipsReconcileMarkWhenRuntimeRequestsIt(t *testing.T) 
 	require.Empty(t, store.markedTenants)
 	require.Empty(t, store.deletedTenants)
 	require.Len(t, store.recordedRuns, 1)
+}
+
+func TestReconcilerRunOnceStopsWhenLeadershipCheckFails(t *testing.T) {
+	t.Parallel()
+
+	tenantID := ids.New()
+	store := &fakeTenantStore{
+		tenants: []TenantInstance{
+			{
+				TenantID:     tenantID,
+				SubjectSub:   "authentik|user-6",
+				ServiceID:    "mealie",
+				DesiredState: domain.TenantDesiredStateEnabled,
+				RuntimeState: domain.TenantRuntimeStateDegraded,
+			},
+		},
+	}
+	leadershipLost := errors.New("leadership lost")
+	checks := 0
+	reconciler := NewReconcilerWithRuntimeAndCheck(store, NoopRuntimeClient{}, func(context.Context) error {
+		checks++
+		if checks > 1 {
+			return leadershipLost
+		}
+		return nil
+	}, zerolog.Nop())
+
+	summary, err := reconciler.RunOnce(context.Background())
+	require.ErrorIs(t, err, leadershipLost)
+	require.Equal(t, 1, summary.Scanned)
+	require.Empty(t, store.recordedRuns)
+	require.Empty(t, store.markedTenants)
 }
 
 func TestPreservedTenantErrorClearsForHealthyNoop(t *testing.T) {

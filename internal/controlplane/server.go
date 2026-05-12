@@ -85,7 +85,7 @@ func (a *App) Run(ctx context.Context) error {
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go a.runLeaseRenewalLoop(runtimeCtx)
+	go a.runLeaseRenewalLoop(runtimeCtx, cancel)
 
 	if err := a.runStartupSequence(runtimeCtx); err != nil {
 		return err
@@ -99,7 +99,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	go a.runLoops(runtimeCtx)
 	go func() {
-		<-ctx.Done()
+		<-runtimeCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
@@ -145,8 +145,12 @@ func runStartupSequence(
 	return nil
 }
 
-func (a *App) runLeaseRenewalLoop(ctx context.Context) {
-	ticker := time.NewTicker(controlPlaneLeaseRenewInterval)
+func (a *App) runLeaseRenewalLoop(ctx context.Context, cancel context.CancelFunc) {
+	a.runLeaseRenewalLoopWithInterval(ctx, cancel, controlPlaneLeaseRenewInterval)
+}
+
+func (a *App) runLeaseRenewalLoopWithInterval(ctx context.Context, cancel context.CancelFunc, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -156,6 +160,7 @@ func (a *App) runLeaseRenewalLoop(ctx context.Context) {
 		case <-ticker.C:
 			if !a.hasLeadership(ctx) {
 				a.logger.Error().Msg("control-plane lease renewal failed")
+				cancel()
 				return
 			}
 		}
@@ -212,8 +217,16 @@ func (a *App) runReconcileCycle(ctx context.Context) (ReconcileSummary, error) {
 			a.health.setReconcileResult(ReconcileSummary{}, err)
 			return ReconcileSummary{}, err
 		}
+		if err := a.requireLeadership(ctx); err != nil {
+			a.health.setReconcileResult(ReconcileSummary{}, err)
+			return ReconcileSummary{}, err
+		}
 	}
 	if err := a.store.ReconcileDesiredTenants(ctx); err != nil {
+		a.health.setReconcileResult(ReconcileSummary{}, err)
+		return ReconcileSummary{}, err
+	}
+	if err := a.requireLeadership(ctx); err != nil {
 		a.health.setReconcileResult(ReconcileSummary{}, err)
 		return ReconcileSummary{}, err
 	}
@@ -243,7 +256,7 @@ func (a *App) configureDependencies(ctx context.Context) error {
 		return nil
 	}
 
-	a.reconciler = NewReconcilerWithRuntime(a.store, NewCoolifyTenantRuntime(a.cfg, a.store, deps, a.logger), a.logger)
+	a.reconciler = NewReconcilerWithRuntimeAndCheck(a.store, NewCoolifyTenantRuntime(a.cfg, a.store, deps, a.logger), a.requireLeadership, a.logger)
 	return nil
 }
 
@@ -281,6 +294,16 @@ func (a *App) handleReadiness(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) hasLeadership(ctx context.Context) bool {
 	return a.lock != nil && a.lock.Held(ctx)
+}
+
+func (a *App) requireLeadership(ctx context.Context) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if !a.hasLeadership(ctx) {
+		return errors.New("control-plane advisory lock is not held")
+	}
+	return nil
 }
 
 func (h *healthState) snapshot() healthSnapshot {

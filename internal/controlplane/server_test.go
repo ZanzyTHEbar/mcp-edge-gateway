@@ -90,6 +90,37 @@ func TestRunStartupSequenceStopsBeforeReconcileWhenHealthProbeFails(t *testing.T
 	require.False(t, reconcileCalled)
 }
 
+func TestRunLeaseRenewalLoopCancelsRuntimeOnLeaseLoss(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeCanceled := make(chan struct{})
+	runtimeCancel := func() {
+		cancel()
+		close(runtimeCanceled)
+	}
+
+	app := &App{logger: zerolog.Nop()}
+	go app.runLeaseRenewalLoopWithInterval(ctx, runtimeCancel, time.Millisecond)
+
+	select {
+	case <-runtimeCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("lease renewal loop did not cancel runtime after leadership loss")
+	}
+}
+
+func TestRequireLeadershipReturnsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	app := &App{logger: zerolog.Nop()}
+	require.ErrorIs(t, app.requireLeadership(ctx), context.Canceled)
+}
+
 func TestHandleReadinessReportsConfigErrors(t *testing.T) {
 	t.Parallel()
 

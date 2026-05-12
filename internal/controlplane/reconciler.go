@@ -23,9 +23,10 @@ type RuntimeApplyResult struct {
 }
 
 type Reconciler struct {
-	store   tenantStore
-	runtime RuntimeClient
-	logger  zerolog.Logger
+	store        tenantStore
+	runtime      RuntimeClient
+	beforeTenant func(context.Context) error
+	logger       zerolog.Logger
 }
 
 type NoopRuntimeClient struct{}
@@ -35,10 +36,15 @@ func NewReconciler(store tenantStore, logger zerolog.Logger) *Reconciler {
 }
 
 func NewReconcilerWithRuntime(store tenantStore, runtime RuntimeClient, logger zerolog.Logger) *Reconciler {
+	return NewReconcilerWithRuntimeAndCheck(store, runtime, nil, logger)
+}
+
+func NewReconcilerWithRuntimeAndCheck(store tenantStore, runtime RuntimeClient, beforeTenant func(context.Context) error, logger zerolog.Logger) *Reconciler {
 	return &Reconciler{
-		store:   store,
-		runtime: runtime,
-		logger:  logger,
+		store:        store,
+		runtime:      runtime,
+		beforeTenant: beforeTenant,
+		logger:       logger,
 	}
 }
 
@@ -54,10 +60,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconcileSummary, error) {
 	}
 
 	for _, tenant := range tenants {
+		if err := r.checkBeforeTenant(ctx); err != nil {
+			return summary, err
+		}
 		plan := PlanTenantAction(tenant)
 		startedAt := time.Now().UTC()
 		result, applyErr := r.runtime.Apply(ctx, tenant, plan)
 		finishedAt := time.Now().UTC()
+		if err := r.checkBeforeTenant(ctx); err != nil {
+			return summary, err
+		}
 
 		status := result.Status
 		if status == "" {
@@ -130,6 +142,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconcileSummary, error) {
 	}
 
 	return summary, nil
+}
+
+func (r *Reconciler) checkBeforeTenant(ctx context.Context) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if r.beforeTenant == nil {
+		return nil
+	}
+	return r.beforeTenant(ctx)
 }
 
 func PlanTenantAction(tenant TenantInstance) TenantPlan {

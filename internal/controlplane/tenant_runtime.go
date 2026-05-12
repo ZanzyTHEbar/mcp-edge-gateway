@@ -135,10 +135,10 @@ func (r *CoolifyTenantRuntime) ensure(ctx context.Context, tenant TenantInstance
 		createResponse, err := r.coolify.CreateService(ctx, rendered.CreateRequest)
 		if err != nil {
 			_ = r.store.UpdateTenantRuntimeStatus(ctx, TenantRuntimeUpdate{
-				TenantID:     tenant.TenantID,
-				RuntimeState: domain.TenantRuntimeStateDegraded,
-				LastError:    err.Error(),
-				UpstreamURL:  rendered.UpstreamURL,
+				TenantID:               tenant.TenantID,
+				RuntimeState:           domain.TenantRuntimeStateDegraded,
+				LastError:              err.Error(),
+				ClearRuntimeReferences: true,
 			})
 			return RuntimeApplyResult{}, err
 		}

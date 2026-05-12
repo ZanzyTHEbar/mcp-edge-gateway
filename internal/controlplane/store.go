@@ -24,16 +24,6 @@ type Store struct {
 	logger  zerolog.Logger
 }
 
-type TenantRuntimeUpdate struct {
-	TenantID             ids.UUID
-	RuntimeState         domain.TenantRuntimeState
-	CoolifyResourceID    string
-	CoolifyApplicationID string
-	UpstreamURL          string
-	LastHealthyAt        *time.Time
-	LastError            string
-}
-
 type desiredTenantSpec struct {
 	subject   domain.Subject
 	serviceID string
@@ -320,14 +310,19 @@ func (s *Store) UpdateTenantRuntimeStatus(ctx context.Context, update TenantRunt
 	if update.LastHealthyAt != nil {
 		lastHealthyAt = formatSQLiteTime(*update.LastHealthyAt)
 	}
+	clearRuntimeReferences := sql.NullString{String: "0", Valid: true}
+	if update.ClearRuntimeReferences {
+		clearRuntimeReferences.String = "1"
+	}
 	if err := s.queries.UpdateTenantRuntimeStatus(ctx, platformdb.UpdateTenantRuntimeStatusParams{
-		TenantID:             update.TenantID.Bytes(),
-		RuntimeState:         string(update.RuntimeState),
-		CoolifyResourceID:    update.CoolifyResourceID,
-		CoolifyApplicationID: update.CoolifyApplicationID,
-		UpstreamUrl:          update.UpstreamURL,
-		LastHealthyAt:        lastHealthyAt,
-		LastError:            update.LastError,
+		TenantID:               update.TenantID.Bytes(),
+		RuntimeState:           string(update.RuntimeState),
+		CoolifyResourceID:      update.CoolifyResourceID,
+		CoolifyApplicationID:   update.CoolifyApplicationID,
+		UpstreamUrl:            update.UpstreamURL,
+		LastHealthyAt:          lastHealthyAt,
+		ClearRuntimeReferences: clearRuntimeReferences,
+		LastError:              update.LastError,
 	}); err != nil {
 		return fmt.Errorf("update tenant runtime status for %s: %w", update.TenantID, err)
 	}

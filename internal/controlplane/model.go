@@ -37,6 +37,17 @@ type TenantInstance struct {
 	UpdatedAt            time.Time
 }
 
+type TenantRuntimeUpdate struct {
+	TenantID               ids.UUID
+	RuntimeState           domain.TenantRuntimeState
+	CoolifyResourceID      string
+	CoolifyApplicationID   string
+	UpstreamURL            string
+	LastHealthyAt          *time.Time
+	ClearRuntimeReferences bool
+	LastError              string
+}
+
 type ReconcileAction string
 
 const (

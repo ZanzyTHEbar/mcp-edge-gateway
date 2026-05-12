@@ -430,39 +430,41 @@ func (q *Queries) MarkTenantReconciled(ctx context.Context, arg MarkTenantReconc
 const UpdateTenantRuntimeStatus = `-- name: UpdateTenantRuntimeStatus :exec
 UPDATE tenant_instances
 SET runtime_state = ?1,
-    coolify_resource_id = CASE WHEN ?2 = '' THEN coolify_resource_id ELSE ?2 END,
-    coolify_application_id = CASE WHEN ?3 = '' THEN coolify_application_id ELSE ?3 END,
-    upstream_url = CASE WHEN ?4 = '' THEN upstream_url ELSE ?4 END,
-    last_healthy_at = CASE WHEN ?5 IS NULL THEN last_healthy_at ELSE ?5 END,
-    last_error = NULLIF(?6, ''),
+    coolify_resource_id = CASE WHEN ?2 THEN NULL WHEN ?3 = '' THEN coolify_resource_id ELSE ?3 END,
+    coolify_application_id = CASE WHEN ?2 THEN NULL WHEN ?4 = '' THEN coolify_application_id ELSE ?4 END,
+    upstream_url = CASE WHEN ?2 THEN NULL WHEN ?5 = '' THEN upstream_url ELSE ?5 END,
+    last_healthy_at = CASE WHEN ?2 THEN NULL WHEN ?6 IS NULL THEN last_healthy_at ELSE ?6 END,
+    last_error = NULLIF(?7, ''),
     updated_at = CURRENT_TIMESTAMP
-WHERE tenant_id = ?7
+WHERE tenant_id = ?8
 `
 
 type UpdateTenantRuntimeStatusParams struct {
-	RuntimeState         string      `db:"runtime_state" json:"runtime_state"`
-	CoolifyResourceID    interface{} `db:"coolify_resource_id" json:"coolify_resource_id"`
-	CoolifyApplicationID interface{} `db:"coolify_application_id" json:"coolify_application_id"`
-	UpstreamUrl          interface{} `db:"upstream_url" json:"upstream_url"`
-	LastHealthyAt        interface{} `db:"last_healthy_at" json:"last_healthy_at"`
-	LastError            interface{} `db:"last_error" json:"last_error"`
-	TenantID             []byte      `db:"tenant_id" json:"tenant_id"`
+	RuntimeState           string         `db:"runtime_state" json:"runtime_state"`
+	ClearRuntimeReferences sql.NullString `db:"clear_runtime_references" json:"clear_runtime_references"`
+	CoolifyResourceID      interface{}    `db:"coolify_resource_id" json:"coolify_resource_id"`
+	CoolifyApplicationID   interface{}    `db:"coolify_application_id" json:"coolify_application_id"`
+	UpstreamUrl            interface{}    `db:"upstream_url" json:"upstream_url"`
+	LastHealthyAt          interface{}    `db:"last_healthy_at" json:"last_healthy_at"`
+	LastError              interface{}    `db:"last_error" json:"last_error"`
+	TenantID               []byte         `db:"tenant_id" json:"tenant_id"`
 }
 
 // UpdateTenantRuntimeStatus
 //
 //	UPDATE tenant_instances
 //	SET runtime_state = ?1,
-//	    coolify_resource_id = CASE WHEN ?2 = '' THEN coolify_resource_id ELSE ?2 END,
-//	    coolify_application_id = CASE WHEN ?3 = '' THEN coolify_application_id ELSE ?3 END,
-//	    upstream_url = CASE WHEN ?4 = '' THEN upstream_url ELSE ?4 END,
-//	    last_healthy_at = CASE WHEN ?5 IS NULL THEN last_healthy_at ELSE ?5 END,
-//	    last_error = NULLIF(?6, ''),
+//	    coolify_resource_id = CASE WHEN ?2 THEN NULL WHEN ?3 = '' THEN coolify_resource_id ELSE ?3 END,
+//	    coolify_application_id = CASE WHEN ?2 THEN NULL WHEN ?4 = '' THEN coolify_application_id ELSE ?4 END,
+//	    upstream_url = CASE WHEN ?2 THEN NULL WHEN ?5 = '' THEN upstream_url ELSE ?5 END,
+//	    last_healthy_at = CASE WHEN ?2 THEN NULL WHEN ?6 IS NULL THEN last_healthy_at ELSE ?6 END,
+//	    last_error = NULLIF(?7, ''),
 //	    updated_at = CURRENT_TIMESTAMP
-//	WHERE tenant_id = ?7
+//	WHERE tenant_id = ?8
 func (q *Queries) UpdateTenantRuntimeStatus(ctx context.Context, arg UpdateTenantRuntimeStatusParams) error {
 	_, err := q.db.ExecContext(ctx, UpdateTenantRuntimeStatus,
 		arg.RuntimeState,
+		arg.ClearRuntimeReferences,
 		arg.CoolifyResourceID,
 		arg.CoolifyApplicationID,
 		arg.UpstreamUrl,
