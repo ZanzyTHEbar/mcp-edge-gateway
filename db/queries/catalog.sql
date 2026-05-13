@@ -19,6 +19,26 @@ FROM service_catalog
 WHERE enabled = 1
 ORDER BY service_id;
 
+-- name: ListServiceCatalog :many
+SELECT service_id,
+    display_name,
+    upstream_service_name,
+    transport_type,
+    internal_port,
+    public_path,
+    internal_upstream_path,
+    health_path,
+    health_probe_expectation,
+    resource_profile,
+    persistence_policy,
+    adapter_requirement,
+    secret_contract,
+    enabled,
+    created_at,
+    updated_at
+FROM service_catalog
+ORDER BY service_id;
+
 -- name: UpsertServiceCatalogEntry :exec
 INSERT INTO service_catalog (
     service_id,
@@ -35,6 +55,7 @@ INSERT INTO service_catalog (
     adapter_requirement,
     secret_contract,
     enabled,
+    source,
     updated_at
 )
 VALUES (
@@ -52,6 +73,7 @@ VALUES (
     sqlc.arg(adapter_requirement),
     sqlc.arg(secret_contract),
     sqlc.arg(enabled),
+    sqlc.arg(source),
     CURRENT_TIMESTAMP
 )
 ON CONFLICT(service_id) DO UPDATE SET
@@ -68,10 +90,18 @@ ON CONFLICT(service_id) DO UPDATE SET
     adapter_requirement = excluded.adapter_requirement,
     enabled = excluded.enabled,
     secret_contract = excluded.secret_contract,
+    source = excluded.source,
     updated_at = CURRENT_TIMESTAMP;
 
 -- name: DisableServiceCatalogEntriesNotIn :exec
 UPDATE service_catalog
 SET enabled = 0,
     updated_at = CURRENT_TIMESTAMP
-WHERE service_id NOT IN (sqlc.slice(service_ids));
+WHERE service_id NOT IN (sqlc.slice(service_ids))
+  AND source = 'builtin';
+
+-- name: DisableServiceCatalogEntry :exec
+UPDATE service_catalog
+SET enabled = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE service_id = ?1;

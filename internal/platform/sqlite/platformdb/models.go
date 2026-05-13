@@ -8,25 +8,6 @@ import (
 	"database/sql"
 )
 
-type ServiceCatalog struct {
-	ServiceID              string `db:"service_id" json:"service_id"`
-	DisplayName            string `db:"display_name" json:"display_name"`
-	UpstreamServiceName    string `db:"upstream_service_name" json:"upstream_service_name"`
-	TransportType          string `db:"transport_type" json:"transport_type"`
-	InternalPort           int64  `db:"internal_port" json:"internal_port"`
-	PublicPath             string `db:"public_path" json:"public_path"`
-	InternalUpstreamPath   string `db:"internal_upstream_path" json:"internal_upstream_path"`
-	HealthPath             string `db:"health_path" json:"health_path"`
-	HealthProbeExpectation string `db:"health_probe_expectation" json:"health_probe_expectation"`
-	ResourceProfile        string `db:"resource_profile" json:"resource_profile"`
-	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
-	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
-	SecretContract         string `db:"secret_contract" json:"secret_contract"`
-	Enabled                int64  `db:"enabled" json:"enabled"`
-	CreatedAt              string `db:"created_at" json:"created_at"`
-	UpdatedAt              string `db:"updated_at" json:"updated_at"`
-}
-
 type TenantInstance struct {
 	TenantID             []byte         `db:"tenant_id" json:"tenant_id"`
 	SubjectSub           string         `db:"subject_sub" json:"subject_sub"`

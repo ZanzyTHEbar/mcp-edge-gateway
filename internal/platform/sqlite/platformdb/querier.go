@@ -118,7 +118,15 @@ type Querier interface {
 	//  SET enabled = 0,
 	//      updated_at = CURRENT_TIMESTAMP
 	//  WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+	//    AND source = 'builtin'
 	DisableServiceCatalogEntriesNotIn(ctx context.Context, arg DisableServiceCatalogEntriesNotInParams) error
+	//DisableServiceCatalogEntry
+	//
+	//  UPDATE service_catalog
+	//  SET enabled = 0,
+	//      updated_at = CURRENT_TIMESTAMP
+	//  WHERE service_id = ?1
+	DisableServiceCatalogEntry(ctx context.Context, arg DisableServiceCatalogEntryParams) error
 	//EdgeUpsertSubject
 	//
 	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
@@ -243,7 +251,28 @@ type Querier interface {
 	//  FROM service_catalog
 	//  WHERE enabled = 1
 	//  ORDER BY service_id
-	ListEnabledServiceCatalog(ctx context.Context) ([]ServiceCatalog, error)
+	ListEnabledServiceCatalog(ctx context.Context) ([]ListEnabledServiceCatalogRow, error)
+	//ListServiceCatalog
+	//
+	//  SELECT service_id,
+	//      display_name,
+	//      upstream_service_name,
+	//      transport_type,
+	//      internal_port,
+	//      public_path,
+	//      internal_upstream_path,
+	//      health_path,
+	//      health_probe_expectation,
+	//      resource_profile,
+	//      persistence_policy,
+	//      adapter_requirement,
+	//      secret_contract,
+	//      enabled,
+	//      created_at,
+	//      updated_at
+	//  FROM service_catalog
+	//  ORDER BY service_id
+	ListServiceCatalog(ctx context.Context) ([]ListServiceCatalogRow, error)
 	//ListTenantInstances
 	//
 	//  SELECT tenant_id,
@@ -358,6 +387,7 @@ type Querier interface {
 	//      adapter_requirement,
 	//      secret_contract,
 	//      enabled,
+	//      source,
 	//      updated_at
 	//  )
 	//  VALUES (
@@ -375,6 +405,7 @@ type Querier interface {
 	//      ?12,
 	//      ?13,
 	//      ?14,
+	//      ?15,
 	//      CURRENT_TIMESTAMP
 	//  )
 	//  ON CONFLICT(service_id) DO UPDATE SET
@@ -391,6 +422,7 @@ type Querier interface {
 	//      adapter_requirement = excluded.adapter_requirement,
 	//      enabled = excluded.enabled,
 	//      secret_contract = excluded.secret_contract,
+	//      source = excluded.source,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error
 	//UpsertSubject

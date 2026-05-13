@@ -165,6 +165,7 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 			AdapterRequirement:     string(entry.AdapterRequirement),
 			SecretContract:         string(secretContract),
 			Enabled:                1,
+			Source:                 "builtin",
 		}); err != nil {
 			return fmt.Errorf("seed service catalog entry %s: %w", entry.ServiceID, err)
 		}
@@ -173,6 +174,48 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 		if err := s.queries.DisableServiceCatalogEntriesNotIn(ctx, platformdb.DisableServiceCatalogEntriesNotInParams{ServiceIds: serviceIDs}); err != nil {
 			return fmt.Errorf("disable stale service catalog entries: %w", err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) ListServiceCatalog(ctx context.Context) ([]catalog.ServiceCatalogEntry, error) {
+	records, err := s.queries.ListServiceCatalog(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list service catalog: %w", err)
+	}
+	return convertServiceCatalog(records)
+}
+
+func (s *Store) UpsertAdminServiceCatalogEntry(ctx context.Context, entry catalog.ServiceCatalogEntry) error {
+	secretContract, err := json.Marshal(entry.SecretContract)
+	if err != nil {
+		return fmt.Errorf("marshal secret contract for %s: %w", entry.ServiceID, err)
+	}
+	if err := s.queries.UpsertServiceCatalogEntry(ctx, platformdb.UpsertServiceCatalogEntryParams{
+		ServiceID:              entry.ServiceID,
+		DisplayName:            entry.DisplayName,
+		UpstreamServiceName:    entry.UpstreamServiceName,
+		TransportType:          string(entry.TransportType),
+		InternalPort:           int64(entry.InternalPort),
+		PublicPath:             entry.PublicPath,
+		InternalUpstreamPath:   entry.InternalUpstreamPath,
+		HealthPath:             entry.HealthPath,
+		HealthProbeExpectation: entry.HealthProbeExpectation,
+		ResourceProfile:        entry.ResourceProfile,
+		PersistencePolicy:      entry.PersistencePolicy,
+		AdapterRequirement:     string(entry.AdapterRequirement),
+		SecretContract:         string(secretContract),
+		Enabled:                1,
+		Source:                 "admin_api",
+	}); err != nil {
+		return fmt.Errorf("upsert admin service catalog entry %s: %w", entry.ServiceID, err)
+	}
+	return nil
+}
+
+func (s *Store) DisableServiceCatalogEntry(ctx context.Context, serviceID string) error {
+	if err := s.queries.DisableServiceCatalogEntry(ctx, platformdb.DisableServiceCatalogEntryParams{ServiceID: serviceID}); err != nil {
+		return fmt.Errorf("disable service catalog entry %s: %w", serviceID, err)
 	}
 	return nil
 }
@@ -435,6 +478,31 @@ func enableTenantInstance(ctx context.Context, q *platformdb.Queries, tenant Ten
 		return fmt.Errorf("enable tenant instance %s: %w", tenant.TenantID, err)
 	}
 	return nil
+}
+
+func convertServiceCatalog(records []platformdb.ListServiceCatalogRow) ([]catalog.ServiceCatalogEntry, error) {
+	entries := make([]catalog.ServiceCatalogEntry, 0, len(records))
+	for _, record := range records {
+		entry := catalog.ServiceCatalogEntry{
+			ServiceID:              record.ServiceID,
+			DisplayName:            record.DisplayName,
+			UpstreamServiceName:    record.UpstreamServiceName,
+			TransportType:          catalog.TransportType(record.TransportType),
+			InternalPort:           int(record.InternalPort),
+			PublicPath:             record.PublicPath,
+			InternalUpstreamPath:   record.InternalUpstreamPath,
+			HealthPath:             record.HealthPath,
+			HealthProbeExpectation: record.HealthProbeExpectation,
+			ResourceProfile:        record.ResourceProfile,
+			PersistencePolicy:      record.PersistencePolicy,
+			AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+		}
+		if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
+			return nil, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 func convertTenantInstances(records []platformdb.TenantInstance) ([]TenantInstance, error) {

@@ -4,9 +4,9 @@ This document describes the current MCP Edge Gateway operating contract. It is d
 
 ## Registering MCP Services
 
-MCP services are registered as builtin catalog entries in code. There is no dynamic service-registration API today.
+MCP services are registered in the shared `service_catalog` table. The control plane seeds builtin services from `internal/catalog/service.go`, and operators can add or update dynamic services through the control-plane admin API.
 
-The source of truth is `internal/catalog/service.go` in `DefaultCatalogV1()`. Each `ServiceCatalogEntry` defines the service ID, public edge path, upstream container shape, transport behavior, health path, adapter requirement, and required secrets.
+Each `ServiceCatalogEntry` defines the service ID, public edge path, upstream container shape, transport behavior, health path, adapter requirement, and required secrets.
 
 Current builtin services:
 
@@ -16,7 +16,46 @@ Current builtin services:
 | `actualbudget` | `https://<edge-domain>/actualbudget/mcp` | `mcp:actualbudget` | `/http` |
 | `memory` | `https://<edge-domain>/memory/mcp` | `mcp:memory` | `/sse` |
 
-Operator workflow for adding a builtin MCP service:
+Operator workflow for adding a dynamic MCP service:
+
+1. Configure `MCP_CONTROL_PLANE_ADMIN_TOKEN_PATH` on `mcp-control-plane` with a local file containing the admin bearer token. Leave it unset to disable the admin API.
+2. Call `PUT /v1/services/<serviceID>` on the internal control-plane service with `Authorization: Bearer <admin-token>`.
+3. Add Authentik group grants for users that should receive the service. The grant group remains `mcp-service-<serviceID>`.
+4. Let the control plane reconcile grants into `tenant_instances` and provision ready upstreams when tenant runtime support exists for that service.
+5. Wait for `mcp-edge` catalog refresh, or restart `mcp-edge`, then verify the service path and scope are published.
+
+Example admin service registration request:
+
+```sh
+curl -fsS http://mcp-control-plane:8081/v1/services/example \
+  -X PUT \
+  -H 'Authorization: Bearer <admin-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "display_name": "Example MCP",
+    "upstream_service_name": "example-mcp",
+    "transport_type": "streamable-http",
+    "internal_port": 8080,
+    "public_path": "/example/mcp",
+    "internal_upstream_path": "/mcp",
+    "health_path": "/health",
+    "health_probe_expectation": "GET returns OK",
+    "resource_profile": "small",
+    "persistence_policy": "stateless",
+    "adapter_requirement": "none",
+    "secret_contract": [{"Key":"api-token","Required":true}]
+  }'
+```
+
+Admin API endpoints:
+
+| Method | Path | Effect |
+|---|---|---|
+| `GET` | `/v1/services` | Lists catalog entries. |
+| `PUT` | `/v1/services/<serviceID>` | Creates or replaces one admin-managed service catalog entry. |
+| `DELETE` | `/v1/services/<serviceID>` | Disables one catalog entry without deleting historical data. |
+
+Operator workflow for adding or changing a builtin MCP service:
 
 1. Add a `ServiceCatalogEntry` in `internal/catalog/service.go`.
 2. Add tenant runtime support in `internal/controlplane/tenant_runtime.go` if the service needs per-subject provisioning.
@@ -30,8 +69,10 @@ Catalog lifecycle details:
 
 - `service_catalog.service_id` is the durable service key.
 - `service_catalog.public_path` is unique and becomes the edge route prefix.
-- Startup upserts builtin entries and disables catalog rows missing from `DefaultCatalogV1()`.
-- Removing a builtin service from code disables it; it does not hard-delete historical data.
+- Startup upserts builtin entries and disables stale builtin rows missing from `DefaultCatalogV1()`.
+- Admin-registered rows are not disabled by builtin catalog seeding and survive control-plane restarts.
+- Removing a builtin service from code disables it; deleting an admin service through the API disables it. Neither path hard-deletes historical data.
+- The control-plane admin API is internal-only by deployment convention. Do not expose `mcp-control-plane` publicly.
 
 ## Using MCPs From Clients
 

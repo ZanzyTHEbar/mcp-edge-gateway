@@ -16,6 +16,7 @@ type Config struct {
 	DatabaseURL                      string
 	DockerNetwork                    string
 	HTTPBindAddr                     string
+	AdminTokenPath                   string
 	ReconcileInterval                time.Duration
 	HealthcheckInterval              time.Duration
 	AuthentikIssuerURL               string
@@ -67,6 +68,7 @@ func LoadConfig() (Config, error) {
 		DatabaseURL:                      strings.TrimSpace(viper.GetString(contracts.EnvPlatformDatabaseURL)),
 		DockerNetwork:                    strings.TrimSpace(viper.GetString(contracts.EnvDockerNetwork)),
 		HTTPBindAddr:                     strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneHTTPBindAddr)),
+		AdminTokenPath:                   strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneAdminTokenPath)),
 		ReconcileInterval:                reconcileInterval,
 		HealthcheckInterval:              healthcheckInterval,
 		AuthentikIssuerURL:               strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneAuthentikIssuerURL)),

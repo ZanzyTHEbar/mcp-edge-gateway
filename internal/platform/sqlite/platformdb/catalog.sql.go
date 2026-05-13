@@ -15,6 +15,7 @@ UPDATE service_catalog
 SET enabled = 0,
     updated_at = CURRENT_TIMESTAMP
 WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+  AND source = 'builtin'
 `
 
 type DisableServiceCatalogEntriesNotInParams struct {
@@ -27,6 +28,7 @@ type DisableServiceCatalogEntriesNotInParams struct {
 //	SET enabled = 0,
 //	    updated_at = CURRENT_TIMESTAMP
 //	WHERE service_id NOT IN (/*SLICE:service_ids*/?)
+//	  AND source = 'builtin'
 func (q *Queries) DisableServiceCatalogEntriesNotIn(ctx context.Context, arg DisableServiceCatalogEntriesNotInParams) error {
 	query := DisableServiceCatalogEntriesNotIn
 	var queryParams []interface{}
@@ -39,6 +41,28 @@ func (q *Queries) DisableServiceCatalogEntriesNotIn(ctx context.Context, arg Dis
 		query = strings.Replace(query, "/*SLICE:service_ids*/?", "NULL", 1)
 	}
 	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
+
+const DisableServiceCatalogEntry = `-- name: DisableServiceCatalogEntry :exec
+UPDATE service_catalog
+SET enabled = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE service_id = ?1
+`
+
+type DisableServiceCatalogEntryParams struct {
+	ServiceID string `db:"service_id" json:"service_id"`
+}
+
+// DisableServiceCatalogEntry
+//
+//	UPDATE service_catalog
+//	SET enabled = 0,
+//	    updated_at = CURRENT_TIMESTAMP
+//	WHERE service_id = ?1
+func (q *Queries) DisableServiceCatalogEntry(ctx context.Context, arg DisableServiceCatalogEntryParams) error {
+	_, err := q.db.ExecContext(ctx, DisableServiceCatalogEntry, arg.ServiceID)
 	return err
 }
 
@@ -64,6 +88,25 @@ WHERE enabled = 1
 ORDER BY service_id
 `
 
+type ListEnabledServiceCatalogRow struct {
+	ServiceID              string `db:"service_id" json:"service_id"`
+	DisplayName            string `db:"display_name" json:"display_name"`
+	UpstreamServiceName    string `db:"upstream_service_name" json:"upstream_service_name"`
+	TransportType          string `db:"transport_type" json:"transport_type"`
+	InternalPort           int64  `db:"internal_port" json:"internal_port"`
+	PublicPath             string `db:"public_path" json:"public_path"`
+	InternalUpstreamPath   string `db:"internal_upstream_path" json:"internal_upstream_path"`
+	HealthPath             string `db:"health_path" json:"health_path"`
+	HealthProbeExpectation string `db:"health_probe_expectation" json:"health_probe_expectation"`
+	ResourceProfile        string `db:"resource_profile" json:"resource_profile"`
+	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
+	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
+	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	Enabled                int64  `db:"enabled" json:"enabled"`
+	CreatedAt              string `db:"created_at" json:"created_at"`
+	UpdatedAt              string `db:"updated_at" json:"updated_at"`
+}
+
 // ListEnabledServiceCatalog
 //
 //	SELECT service_id,
@@ -85,15 +128,115 @@ ORDER BY service_id
 //	FROM service_catalog
 //	WHERE enabled = 1
 //	ORDER BY service_id
-func (q *Queries) ListEnabledServiceCatalog(ctx context.Context) ([]ServiceCatalog, error) {
+func (q *Queries) ListEnabledServiceCatalog(ctx context.Context) ([]ListEnabledServiceCatalogRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListEnabledServiceCatalog)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ServiceCatalog{}
+	items := []ListEnabledServiceCatalogRow{}
 	for rows.Next() {
-		var i ServiceCatalog
+		var i ListEnabledServiceCatalogRow
+		if err := rows.Scan(
+			&i.ServiceID,
+			&i.DisplayName,
+			&i.UpstreamServiceName,
+			&i.TransportType,
+			&i.InternalPort,
+			&i.PublicPath,
+			&i.InternalUpstreamPath,
+			&i.HealthPath,
+			&i.HealthProbeExpectation,
+			&i.ResourceProfile,
+			&i.PersistencePolicy,
+			&i.AdapterRequirement,
+			&i.SecretContract,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListServiceCatalog = `-- name: ListServiceCatalog :many
+SELECT service_id,
+    display_name,
+    upstream_service_name,
+    transport_type,
+    internal_port,
+    public_path,
+    internal_upstream_path,
+    health_path,
+    health_probe_expectation,
+    resource_profile,
+    persistence_policy,
+    adapter_requirement,
+    secret_contract,
+    enabled,
+    created_at,
+    updated_at
+FROM service_catalog
+ORDER BY service_id
+`
+
+type ListServiceCatalogRow struct {
+	ServiceID              string `db:"service_id" json:"service_id"`
+	DisplayName            string `db:"display_name" json:"display_name"`
+	UpstreamServiceName    string `db:"upstream_service_name" json:"upstream_service_name"`
+	TransportType          string `db:"transport_type" json:"transport_type"`
+	InternalPort           int64  `db:"internal_port" json:"internal_port"`
+	PublicPath             string `db:"public_path" json:"public_path"`
+	InternalUpstreamPath   string `db:"internal_upstream_path" json:"internal_upstream_path"`
+	HealthPath             string `db:"health_path" json:"health_path"`
+	HealthProbeExpectation string `db:"health_probe_expectation" json:"health_probe_expectation"`
+	ResourceProfile        string `db:"resource_profile" json:"resource_profile"`
+	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
+	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
+	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	Enabled                int64  `db:"enabled" json:"enabled"`
+	CreatedAt              string `db:"created_at" json:"created_at"`
+	UpdatedAt              string `db:"updated_at" json:"updated_at"`
+}
+
+// ListServiceCatalog
+//
+//	SELECT service_id,
+//	    display_name,
+//	    upstream_service_name,
+//	    transport_type,
+//	    internal_port,
+//	    public_path,
+//	    internal_upstream_path,
+//	    health_path,
+//	    health_probe_expectation,
+//	    resource_profile,
+//	    persistence_policy,
+//	    adapter_requirement,
+//	    secret_contract,
+//	    enabled,
+//	    created_at,
+//	    updated_at
+//	FROM service_catalog
+//	ORDER BY service_id
+func (q *Queries) ListServiceCatalog(ctx context.Context) ([]ListServiceCatalogRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListServiceCatalog)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServiceCatalogRow{}
+	for rows.Next() {
+		var i ListServiceCatalogRow
 		if err := rows.Scan(
 			&i.ServiceID,
 			&i.DisplayName,
@@ -141,6 +284,7 @@ INSERT INTO service_catalog (
     adapter_requirement,
     secret_contract,
     enabled,
+    source,
     updated_at
 )
 VALUES (
@@ -158,6 +302,7 @@ VALUES (
     ?12,
     ?13,
     ?14,
+    ?15,
     CURRENT_TIMESTAMP
 )
 ON CONFLICT(service_id) DO UPDATE SET
@@ -174,6 +319,7 @@ ON CONFLICT(service_id) DO UPDATE SET
     adapter_requirement = excluded.adapter_requirement,
     enabled = excluded.enabled,
     secret_contract = excluded.secret_contract,
+    source = excluded.source,
     updated_at = CURRENT_TIMESTAMP
 `
 
@@ -192,6 +338,7 @@ type UpsertServiceCatalogEntryParams struct {
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
+	Source                 string `db:"source" json:"source"`
 }
 
 // UpsertServiceCatalogEntry
@@ -211,6 +358,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    adapter_requirement,
 //	    secret_contract,
 //	    enabled,
+//	    source,
 //	    updated_at
 //	)
 //	VALUES (
@@ -228,6 +376,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    ?12,
 //	    ?13,
 //	    ?14,
+//	    ?15,
 //	    CURRENT_TIMESTAMP
 //	)
 //	ON CONFLICT(service_id) DO UPDATE SET
@@ -244,6 +393,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    adapter_requirement = excluded.adapter_requirement,
 //	    enabled = excluded.enabled,
 //	    secret_contract = excluded.secret_contract,
+//	    source = excluded.source,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertServiceCatalogEntry,
@@ -261,6 +411,7 @@ func (q *Queries) UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServi
 		arg.AdapterRequirement,
 		arg.SecretContract,
 		arg.Enabled,
+		arg.Source,
 	)
 	return err
 }

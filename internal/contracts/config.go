@@ -24,6 +24,7 @@ const (
 
 const (
 	EnvControlPlaneHTTPBindAddr                     = "MCP_CONTROL_PLANE_HTTP_BIND_ADDR"
+	EnvControlPlaneAdminTokenPath                   = "MCP_CONTROL_PLANE_ADMIN_TOKEN_PATH"
 	EnvControlPlaneReconcileInterval                = "MCP_CONTROL_PLANE_RECONCILE_INTERVAL"
 	EnvControlPlaneHealthcheckInterval              = "MCP_CONTROL_PLANE_HEALTHCHECK_INTERVAL"
 	EnvControlPlaneAuthentikIssuerURL               = "MCP_CONTROL_PLANE_AUTHENTIK_ISSUER_URL"

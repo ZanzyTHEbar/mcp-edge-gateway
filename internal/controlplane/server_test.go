@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +188,92 @@ func TestHandleReadinessReportsConfigErrors(t *testing.T) {
 		require.Equal(t, true, payload["dependencies_configured"])
 		require.Equal(t, false, payload["tenant_runtime_configured"])
 	})
+}
+
+func TestCatalogAdminRegistersDynamicService(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	tokenPath := filepath.Join(t.TempDir(), "admin-token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("test-admin-token"), 0o600))
+	app := &App{cfg: Config{AdminTokenPath: tokenPath}, store: store, health: &healthState{}}
+
+	body := `{
+  "display_name": "Custom MCP",
+  "upstream_service_name": "custom-mcp",
+  "transport_type": "streamable-http",
+  "internal_port": 7070,
+  "public_path": "/custom/mcp",
+  "internal_upstream_path": "/mcp",
+  "health_path": "/health",
+  "health_probe_expectation": "GET returns OK",
+  "resource_profile": "small",
+  "persistence_policy": "stateless",
+  "adapter_requirement": "none",
+  "secret_contract": [{"Key":"api-token","Required":true}]
+}`
+	request := httptest.NewRequest(http.MethodPut, "/v1/services/custom", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	var enabled int
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT enabled FROM service_catalog WHERE service_id = 'custom'`).Scan(&enabled))
+	require.Equal(t, 1, enabled)
+
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT enabled FROM service_catalog WHERE service_id = 'custom'`).Scan(&enabled))
+	require.Equal(t, 1, enabled)
+}
+
+func TestCatalogAdminRequiresBearerToken(t *testing.T) {
+	t.Parallel()
+
+	tokenPath := filepath.Join(t.TempDir(), "admin-token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("test-admin-token"), 0o600))
+	app := &App{cfg: Config{AdminTokenPath: tokenPath}, health: &healthState{}}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/services", nil)
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
+func TestCatalogAdminRejectsReservedPublicPath(t *testing.T) {
+	t.Parallel()
+
+	tokenPath := filepath.Join(t.TempDir(), "admin-token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("test-admin-token"), 0o600))
+	app := &App{cfg: Config{AdminTokenPath: tokenPath}, health: &healthState{}}
+
+	body := `{
+  "display_name": "Bad MCP",
+  "upstream_service_name": "bad-mcp",
+  "transport_type": "streamable-http",
+  "internal_port": 7070,
+  "public_path": "/oauth/bad",
+  "internal_upstream_path": "/mcp",
+  "health_path": "/health",
+  "health_probe_expectation": "GET returns OK",
+  "resource_profile": "small",
+  "persistence_policy": "stateless",
+  "adapter_requirement": "none"
+}`
+	request := httptest.NewRequest(http.MethodPut, "/v1/services/bad", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
 
 func TestHandleReadinessRequiresLeadership(t *testing.T) {

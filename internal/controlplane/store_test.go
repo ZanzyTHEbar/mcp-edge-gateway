@@ -139,9 +139,10 @@ INSERT INTO service_catalog (
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    source,
     enabled
 )
-VALUES ('stale-service', 'Stale', 'stale', 'streamable-http', 8080, '/stale/mcp', '/mcp', '/health', 'ok', 'small', 'ephemeral', 'none', '[]', 1);`)
+VALUES ('stale-service', 'Stale', 'stale', 'streamable-http', 8080, '/stale/mcp', '/mcp', '/health', 'ok', 'small', 'ephemeral', 'none', '[]', 'builtin', 1);`)
 	require.NoError(t, err)
 
 	require.NoError(t, store.SeedServiceCatalog(ctx))
