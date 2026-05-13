@@ -3,7 +3,7 @@ name: mcp-edge
 services:
   mcp-edge:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.edge
     image: mcp-edge:coolify
     init: true

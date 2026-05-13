@@ -20,7 +20,7 @@ The templates are intentionally generic. Configure hostnames, secrets, image nam
 
 Use the `*.compose.yaml` files when the deployment platform can build from this repository.
 
-The root compose file uses `build.context: .`. The compose files inside this directory use `build.context: ../..` so they can still reach the root Dockerfiles and Go source tree.
+The root compose file and the Coolify source-build templates use `build.context: .`. Run Coolify source-build templates with the repository root as the Compose project directory so the root Dockerfiles and Go source tree are available to the build.
 
 ### Prebuilt-image mode
 
