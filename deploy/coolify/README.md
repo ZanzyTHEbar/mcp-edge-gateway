@@ -56,11 +56,13 @@ The compose templates mount runtime secrets from a configurable host directory:
 MCP_SECRETS_DIR=/path/to/mcp-secrets
 ```
 
-If unset, the templates use `/data/mcp-platform-secrets`.
+If unset, the Coolify templates use `/data/coolify/mcp-platform-secrets`, which is visible to Coolify's deployment build container on standard installations. Override `MCP_SECRETS_DIR` if your deployment platform exposes a different host path during compose rendering.
 
 The templates also pass `MCP_SECRETS_DIR`, `MCP_PLATFORM_DATA_VOLUME`, and `MCP_DOCKER_NETWORK` into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used in `volumes:` or `networks:`.
 
 Expected files:
+
+When `MCP_SECRETS_DIR` is not overridden, place these files under `/data/coolify/mcp-platform-secrets` on the Coolify host.
 
 - `mcp-control-plane-infisical-machine-client-secret`
 - `mcp-edge-authentik-client-secret`

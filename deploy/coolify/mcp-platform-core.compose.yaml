@@ -52,7 +52,7 @@ services:
       MCP_PLATFORM_DATABASE_URL: ${MCP_PLATFORM_DATABASE_URL:-file:/data/mcp-platform/mcp-platform.db}
       MCP_PLATFORM_DATA_VOLUME: ${MCP_PLATFORM_DATA_VOLUME:-mcp-platform-data}
       MCP_DOCKER_NETWORK: ${MCP_DOCKER_NETWORK:-coolify}
-      MCP_SECRETS_DIR: ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}
+      MCP_SECRETS_DIR: ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}
       MCP_CONTROL_PLANE_HTTP_BIND_ADDR: ${MCP_CONTROL_PLANE_HTTP_BIND_ADDR:-:8081}
       MCP_CONTROL_PLANE_RECONCILE_INTERVAL: ${MCP_CONTROL_PLANE_RECONCILE_INTERVAL:-30s}
       MCP_CONTROL_PLANE_HEALTHCHECK_INTERVAL: ${MCP_CONTROL_PLANE_HEALTHCHECK_INTERVAL:-30s}
@@ -79,7 +79,7 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MODE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MODE:-local}
     volumes:
       - mcp-platform-data:/data/mcp-platform
-      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
+      - ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
     healthcheck:
@@ -117,7 +117,7 @@ services:
       MCP_PLATFORM_DATABASE_URL: ${MCP_PLATFORM_DATABASE_URL:-file:/data/mcp-platform/mcp-platform.db}
       MCP_PLATFORM_DATA_VOLUME: ${MCP_PLATFORM_DATA_VOLUME:-mcp-platform-data}
       MCP_DOCKER_NETWORK: ${MCP_DOCKER_NETWORK:-coolify}
-      MCP_SECRETS_DIR: ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}
+      MCP_SECRETS_DIR: ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}
       MCP_EDGE_HTTP_BIND_ADDR: ${MCP_EDGE_HTTP_BIND_ADDR:-:8080}
       MCP_EDGE_PUBLIC_BASE_URL: ${MCP_EDGE_PUBLIC_BASE_URL:?set MCP_EDGE_PUBLIC_BASE_URL}
       MCP_EDGE_AUTHENTIK_ISSUER_URL: ${MCP_EDGE_AUTHENTIK_ISSUER_URL:?set MCP_EDGE_AUTHENTIK_ISSUER_URL}
@@ -128,9 +128,9 @@ services:
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
     volumes:
       - mcp-platform-data:/data/mcp-platform
-      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
-      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
-      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
+      - ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
+      - ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
+      - ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
     healthcheck:
