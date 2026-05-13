@@ -22,7 +22,7 @@ func RunMigrations(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("open embedded sqlite migrations: %w", err)
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS)
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS, goose.WithAllowOutofOrder(true))
 	if err != nil {
 		return fmt.Errorf("create sqlite migration provider: %w", err)
 	}
