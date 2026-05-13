@@ -79,6 +79,10 @@ func NewCoolifyTenantRuntime(cfg Config, store *Store, clients *DependencyClient
 }
 
 func (r *CoolifyTenantRuntime) Apply(ctx context.Context, tenant TenantInstance, plan TenantPlan) (RuntimeApplyResult, error) {
+	if tenantRuntimeMode(tenant) == runtimeModeStaticUpstream && plan.Action == ReconcileActionDelete {
+		return r.applyStaticUpstream(ctx, tenant, plan, catalog.ServiceCatalogEntry{})
+	}
+
 	service, ok, err := r.loadService(ctx, tenant.ServiceID)
 	if err != nil {
 		return RuntimeApplyResult{}, err

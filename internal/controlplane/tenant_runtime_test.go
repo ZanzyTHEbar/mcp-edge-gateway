@@ -97,6 +97,24 @@ func TestStaticUpstreamRuntimeObservesDynamicServiceWithoutCoolifyProvisioning(t
 	require.Equal(t, domain.TenantRuntimeStateReady, tenants[0].RuntimeState)
 }
 
+func TestStaticUpstreamRuntimeDeletesAfterCatalogServiceDisabled(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewCoolifyTenantRuntime(Config{}, nil, &DependencyClients{}, zerolog.New(io.Discard))
+	result, err := runtime.Apply(context.Background(), TenantInstance{
+		ServiceID:    "disabled-dynamic",
+		DesiredState: domain.TenantDesiredStateDeleted,
+		RuntimeState: domain.TenantRuntimeStateReady,
+		UpstreamURL:  "http://mcp.example:8080",
+		SubjectSub:   "subject-sub",
+		SubjectKey:   "subject-key",
+		Metadata:     []byte(`{"runtime_mode":"static_upstream"}`),
+	}, TenantPlan{Action: ReconcileActionDelete})
+	require.NoError(t, err)
+	require.Equal(t, "deleted", result.Status)
+	require.True(t, result.DeleteCompleted)
+}
+
 func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {
 	t.Parallel()
 
