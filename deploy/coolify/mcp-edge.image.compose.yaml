@@ -29,9 +29,7 @@ services:
       MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH: /run/secrets/mcp-edge-session-encryption-key
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
     volumes:
-      - type: bind
-        source: ${MCP_PLATFORM_DATA_PATH:?set MCP_PLATFORM_DATA_PATH}
-        target: /data/mcp-platform
+      - ${MCP_PLATFORM_DATA_PATH:?set MCP_PLATFORM_DATA_PATH}:/data/mcp-platform
       - type: bind
         source: /data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret
         target: /run/secrets/mcp-edge-authentik-client-secret
