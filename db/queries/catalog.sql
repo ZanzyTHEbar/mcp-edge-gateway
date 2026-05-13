@@ -13,8 +13,58 @@ SELECT service_id,
     adapter_requirement,
     secret_contract,
     enabled,
+    source,
     created_at,
     updated_at
+FROM service_catalog
+WHERE enabled = 1
+ORDER BY service_id;
+
+-- name: GetEnabledServiceCatalogEntry :one
+SELECT service_id,
+    display_name,
+    upstream_service_name,
+    transport_type,
+    internal_port,
+    public_path,
+    internal_upstream_path,
+    health_path,
+    health_probe_expectation,
+    resource_profile,
+    persistence_policy,
+    adapter_requirement,
+    secret_contract,
+    enabled,
+    source,
+    created_at,
+    updated_at
+FROM service_catalog
+WHERE service_id = ?1
+  AND enabled = 1;
+
+-- name: GetServiceCatalogEntry :one
+SELECT service_id,
+    display_name,
+    upstream_service_name,
+    transport_type,
+    internal_port,
+    public_path,
+    internal_upstream_path,
+    health_path,
+    health_probe_expectation,
+    resource_profile,
+    persistence_policy,
+    adapter_requirement,
+    secret_contract,
+    enabled,
+    source,
+    created_at,
+    updated_at
+FROM service_catalog
+WHERE service_id = ?1;
+
+-- name: ListEnabledServiceIDs :many
+SELECT service_id
 FROM service_catalog
 WHERE enabled = 1
 ORDER BY service_id;
@@ -34,6 +84,7 @@ SELECT service_id,
     adapter_requirement,
     secret_contract,
     enabled,
+    source,
     created_at,
     updated_at
 FROM service_catalog

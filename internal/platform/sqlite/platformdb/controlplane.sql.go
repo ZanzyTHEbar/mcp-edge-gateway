@@ -11,20 +11,74 @@ import (
 	"strings"
 )
 
+const CountSubjectServiceGrant = `-- name: CountSubjectServiceGrant :one
+SELECT COUNT(*)
+FROM service_grants
+JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+WHERE service_grants.subject_sub = ?1
+  AND service_grants.service_id = ?2
+  AND service_catalog.enabled = 1
+`
+
+type CountSubjectServiceGrantParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+	ServiceID  string `db:"service_id" json:"service_id"`
+}
+
+// CountSubjectServiceGrant
+//
+//	SELECT COUNT(*)
+//	FROM service_grants
+//	JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+//	WHERE service_grants.subject_sub = ?1
+//	  AND service_grants.service_id = ?2
+//	  AND service_catalog.enabled = 1
+func (q *Queries) CountSubjectServiceGrant(ctx context.Context, arg CountSubjectServiceGrantParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountSubjectServiceGrant, arg.SubjectSub, arg.ServiceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const DeleteAllServiceGrants = `-- name: DeleteAllServiceGrants :exec
-DELETE FROM service_grants
+DELETE FROM service_grant_sources WHERE source_group <> 'manual'
 `
 
 // DeleteAllServiceGrants
 //
-//	DELETE FROM service_grants
+//	DELETE FROM service_grant_sources WHERE source_group <> 'manual'
 func (q *Queries) DeleteAllServiceGrants(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, DeleteAllServiceGrants)
 	return err
 }
 
+const DeleteManualServiceGrantSource = `-- name: DeleteManualServiceGrantSource :exec
+DELETE FROM service_grant_sources
+WHERE subject_sub = ?1
+  AND service_id = ?2
+  AND source_group = 'manual'
+`
+
+type DeleteManualServiceGrantSourceParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+	ServiceID  string `db:"service_id" json:"service_id"`
+}
+
+// DeleteManualServiceGrantSource
+//
+//	DELETE FROM service_grant_sources
+//	WHERE subject_sub = ?1
+//	  AND service_id = ?2
+//	  AND source_group = 'manual'
+func (q *Queries) DeleteManualServiceGrantSource(ctx context.Context, arg DeleteManualServiceGrantSourceParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteManualServiceGrantSource, arg.SubjectSub, arg.ServiceID)
+	return err
+}
+
 const DeleteStaleServiceGrants = `-- name: DeleteStaleServiceGrants :exec
-DELETE FROM service_grants WHERE subject_sub NOT IN (/*SLICE:subject_subs*/?)
+DELETE FROM service_grant_sources
+WHERE source_group <> 'manual'
+  AND subject_sub NOT IN (/*SLICE:subject_subs*/?)
 `
 
 type DeleteStaleServiceGrantsParams struct {
@@ -33,7 +87,9 @@ type DeleteStaleServiceGrantsParams struct {
 
 // DeleteStaleServiceGrants
 //
-//	DELETE FROM service_grants WHERE subject_sub NOT IN (/*SLICE:subject_subs*/?)
+//	DELETE FROM service_grant_sources
+//	WHERE source_group <> 'manual'
+//	  AND subject_sub NOT IN (/*SLICE:subject_subs*/?)
 func (q *Queries) DeleteStaleServiceGrants(ctx context.Context, arg DeleteStaleServiceGrantsParams) error {
 	query := DeleteStaleServiceGrants
 	var queryParams []interface{}
@@ -46,6 +102,22 @@ func (q *Queries) DeleteStaleServiceGrants(ctx context.Context, arg DeleteStaleS
 		query = strings.Replace(query, "/*SLICE:subject_subs*/?", "NULL", 1)
 	}
 	_, err := q.db.ExecContext(ctx, query, queryParams...)
+	return err
+}
+
+const DeleteSubjectGrantSources = `-- name: DeleteSubjectGrantSources :exec
+DELETE FROM service_grant_sources WHERE subject_sub = ?1
+`
+
+type DeleteSubjectGrantSourcesParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+}
+
+// DeleteSubjectGrantSources
+//
+//	DELETE FROM service_grant_sources WHERE subject_sub = ?1
+func (q *Queries) DeleteSubjectGrantSources(ctx context.Context, arg DeleteSubjectGrantSourcesParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteSubjectGrantSources, arg.SubjectSub)
 	return err
 }
 
@@ -62,6 +134,26 @@ type DeleteSubjectGrantsParams struct {
 //	DELETE FROM service_grants WHERE subject_sub = ?1
 func (q *Queries) DeleteSubjectGrants(ctx context.Context, arg DeleteSubjectGrantsParams) error {
 	_, err := q.db.ExecContext(ctx, DeleteSubjectGrants, arg.SubjectSub)
+	return err
+}
+
+const DeleteSubjectSyncedGrantSources = `-- name: DeleteSubjectSyncedGrantSources :exec
+DELETE FROM service_grant_sources
+WHERE subject_sub = ?1
+  AND source_group <> 'manual'
+`
+
+type DeleteSubjectSyncedGrantSourcesParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+}
+
+// DeleteSubjectSyncedGrantSources
+//
+//	DELETE FROM service_grant_sources
+//	WHERE subject_sub = ?1
+//	  AND source_group <> 'manual'
+func (q *Queries) DeleteSubjectSyncedGrantSources(ctx context.Context, arg DeleteSubjectSyncedGrantSourcesParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteSubjectSyncedGrantSources, arg.SubjectSub)
 	return err
 }
 
@@ -127,6 +219,76 @@ func (q *Queries) EnableTenantInstance(ctx context.Context, arg EnableTenantInst
 	return err
 }
 
+const GetSubject = `-- name: GetSubject :one
+SELECT subject_sub,
+       subject_key,
+       preferred_username,
+       email,
+       display_name
+FROM subjects
+WHERE subject_sub = ?1
+`
+
+type GetSubjectParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+}
+
+type GetSubjectRow struct {
+	SubjectSub        string         `db:"subject_sub" json:"subject_sub"`
+	SubjectKey        string         `db:"subject_key" json:"subject_key"`
+	PreferredUsername sql.NullString `db:"preferred_username" json:"preferred_username"`
+	Email             sql.NullString `db:"email" json:"email"`
+	DisplayName       sql.NullString `db:"display_name" json:"display_name"`
+}
+
+// GetSubject
+//
+//	SELECT subject_sub,
+//	       subject_key,
+//	       preferred_username,
+//	       email,
+//	       display_name
+//	FROM subjects
+//	WHERE subject_sub = ?1
+func (q *Queries) GetSubject(ctx context.Context, arg GetSubjectParams) (GetSubjectRow, error) {
+	row := q.db.QueryRowContext(ctx, GetSubject, arg.SubjectSub)
+	var i GetSubjectRow
+	err := row.Scan(
+		&i.SubjectSub,
+		&i.SubjectKey,
+		&i.PreferredUsername,
+		&i.Email,
+		&i.DisplayName,
+	)
+	return i, err
+}
+
+const InsertEffectiveServiceGrantsFromSources = `-- name: InsertEffectiveServiceGrantsFromSources :exec
+INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+SELECT subject_sub,
+       service_id,
+       CASE WHEN SUM(CASE WHEN source_group = 'manual' THEN 1 ELSE 0 END) > 0 THEN 'manual' ELSE MIN(source_group) END AS source_group,
+       MIN(granted_at) AS granted_at,
+       MAX(last_synced_at) AS last_synced_at
+FROM service_grant_sources
+GROUP BY subject_sub, service_id
+`
+
+// InsertEffectiveServiceGrantsFromSources
+//
+//	INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+//	SELECT subject_sub,
+//	       service_id,
+//	       CASE WHEN SUM(CASE WHEN source_group = 'manual' THEN 1 ELSE 0 END) > 0 THEN 'manual' ELSE MIN(source_group) END AS source_group,
+//	       MIN(granted_at) AS granted_at,
+//	       MAX(last_synced_at) AS last_synced_at
+//	FROM service_grant_sources
+//	GROUP BY subject_sub, service_id
+func (q *Queries) InsertEffectiveServiceGrantsFromSources(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, InsertEffectiveServiceGrantsFromSources)
+	return err
+}
+
 const InsertReconcileRun = `-- name: InsertReconcileRun :exec
 INSERT INTO reconcile_runs (run_id, tenant_id, desired_state, observed_state, action, status, details, started_at, finished_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -163,12 +325,15 @@ func (q *Queries) InsertReconcileRun(ctx context.Context, arg InsertReconcileRun
 	return err
 }
 
-const InsertServiceGrant = `-- name: InsertServiceGrant :exec
-INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+const InsertServiceGrantSource = `-- name: InsertServiceGrantSource :exec
+INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
 VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+    last_synced_at = excluded.last_synced_at,
+    updated_at = CURRENT_TIMESTAMP
 `
 
-type InsertServiceGrantParams struct {
+type InsertServiceGrantSourceParams struct {
 	SubjectSub   string `db:"subject_sub" json:"subject_sub"`
 	ServiceID    string `db:"service_id" json:"service_id"`
 	SourceGroup  string `db:"source_group" json:"source_group"`
@@ -176,12 +341,15 @@ type InsertServiceGrantParams struct {
 	LastSyncedAt string `db:"last_synced_at" json:"last_synced_at"`
 }
 
-// InsertServiceGrant
+// InsertServiceGrantSource
 //
-//	INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+//	INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
 //	VALUES (?1, ?2, ?3, ?4, ?5)
-func (q *Queries) InsertServiceGrant(ctx context.Context, arg InsertServiceGrantParams) error {
-	_, err := q.db.ExecContext(ctx, InsertServiceGrant,
+//	ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+//	    last_synced_at = excluded.last_synced_at,
+//	    updated_at = CURRENT_TIMESTAMP
+func (q *Queries) InsertServiceGrantSource(ctx context.Context, arg InsertServiceGrantSourceParams) error {
+	_, err := q.db.ExecContext(ctx, InsertServiceGrantSource,
 		arg.SubjectSub,
 		arg.ServiceID,
 		arg.SourceGroup,
@@ -277,6 +445,72 @@ func (q *Queries) ListDesiredTenantSpecs(ctx context.Context) ([]ListDesiredTena
 			&i.Email,
 			&i.DisplayName,
 			&i.ServiceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListSubjectServiceGrants = `-- name: ListSubjectServiceGrants :many
+SELECT service_grants.subject_sub,
+       service_grants.service_id,
+       service_grants.source_group,
+       service_grants.granted_at,
+       service_grants.last_synced_at
+FROM service_grants
+JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+WHERE service_grants.subject_sub = ?1
+  AND service_catalog.enabled = 1
+ORDER BY service_grants.service_id
+`
+
+type ListSubjectServiceGrantsParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+}
+
+type ListSubjectServiceGrantsRow struct {
+	SubjectSub   string `db:"subject_sub" json:"subject_sub"`
+	ServiceID    string `db:"service_id" json:"service_id"`
+	SourceGroup  string `db:"source_group" json:"source_group"`
+	GrantedAt    string `db:"granted_at" json:"granted_at"`
+	LastSyncedAt string `db:"last_synced_at" json:"last_synced_at"`
+}
+
+// ListSubjectServiceGrants
+//
+//	SELECT service_grants.subject_sub,
+//	       service_grants.service_id,
+//	       service_grants.source_group,
+//	       service_grants.granted_at,
+//	       service_grants.last_synced_at
+//	FROM service_grants
+//	JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+//	WHERE service_grants.subject_sub = ?1
+//	  AND service_catalog.enabled = 1
+//	ORDER BY service_grants.service_id
+func (q *Queries) ListSubjectServiceGrants(ctx context.Context, arg ListSubjectServiceGrantsParams) ([]ListSubjectServiceGrantsRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListSubjectServiceGrants, arg.SubjectSub)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSubjectServiceGrantsRow{}
+	for rows.Next() {
+		var i ListSubjectServiceGrantsRow
+		if err := rows.Scan(
+			&i.SubjectSub,
+			&i.ServiceID,
+			&i.SourceGroup,
+			&i.GrantedAt,
+			&i.LastSyncedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -427,6 +661,18 @@ func (q *Queries) MarkTenantReconciled(ctx context.Context, arg MarkTenantReconc
 	return err
 }
 
+const RebuildEffectiveServiceGrants = `-- name: RebuildEffectiveServiceGrants :exec
+DELETE FROM service_grants
+`
+
+// RebuildEffectiveServiceGrants
+//
+//	DELETE FROM service_grants
+func (q *Queries) RebuildEffectiveServiceGrants(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, RebuildEffectiveServiceGrants)
+	return err
+}
+
 const UpdateTenantRuntimeStatus = `-- name: UpdateTenantRuntimeStatus :exec
 UPDATE tenant_instances
 SET runtime_state = ?1,
@@ -475,6 +721,143 @@ func (q *Queries) UpdateTenantRuntimeStatus(ctx context.Context, arg UpdateTenan
 	return err
 }
 
+const UpsertManualServiceGrantSource = `-- name: UpsertManualServiceGrantSource :exec
+INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
+VALUES (?1, ?2, 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+    last_synced_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertManualServiceGrantSourceParams struct {
+	SubjectSub string `db:"subject_sub" json:"subject_sub"`
+	ServiceID  string `db:"service_id" json:"service_id"`
+}
+
+// UpsertManualServiceGrantSource
+//
+//	INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
+//	VALUES (?1, ?2, 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+//	ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+//	    last_synced_at = CURRENT_TIMESTAMP,
+//	    updated_at = CURRENT_TIMESTAMP
+func (q *Queries) UpsertManualServiceGrantSource(ctx context.Context, arg UpsertManualServiceGrantSourceParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertManualServiceGrantSource, arg.SubjectSub, arg.ServiceID)
+	return err
+}
+
+const UpsertStaticTenantUpstream = `-- name: UpsertStaticTenantUpstream :exec
+INSERT INTO tenant_instances (
+    tenant_id,
+    subject_sub,
+    service_id,
+    subject_key,
+    tenant_instance_name,
+    internal_dns_name,
+    desired_state,
+    runtime_state,
+    upstream_url,
+    last_healthy_at,
+    last_error,
+    metadata
+)
+VALUES (
+    ?1,
+    ?2,
+    ?3,
+    ?4,
+    ?5,
+    ?6,
+    'enabled',
+    'ready',
+    ?7,
+    ?8,
+    NULL,
+    json_object('runtime_mode', 'static_upstream')
+)
+ON CONFLICT(subject_sub, service_id) DO UPDATE SET
+    subject_key = excluded.subject_key,
+    tenant_instance_name = excluded.tenant_instance_name,
+    internal_dns_name = excluded.internal_dns_name,
+    desired_state = 'enabled',
+    runtime_state = 'ready',
+    coolify_resource_id = NULL,
+    coolify_application_id = NULL,
+    upstream_url = excluded.upstream_url,
+    last_healthy_at = excluded.last_healthy_at,
+    last_error = NULL,
+    metadata = json_patch(tenant_instances.metadata, excluded.metadata),
+    updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertStaticTenantUpstreamParams struct {
+	TenantID           []byte         `db:"tenant_id" json:"tenant_id"`
+	SubjectSub         string         `db:"subject_sub" json:"subject_sub"`
+	ServiceID          string         `db:"service_id" json:"service_id"`
+	SubjectKey         string         `db:"subject_key" json:"subject_key"`
+	TenantInstanceName string         `db:"tenant_instance_name" json:"tenant_instance_name"`
+	InternalDnsName    string         `db:"internal_dns_name" json:"internal_dns_name"`
+	UpstreamUrl        sql.NullString `db:"upstream_url" json:"upstream_url"`
+	LastHealthyAt      sql.NullString `db:"last_healthy_at" json:"last_healthy_at"`
+}
+
+// UpsertStaticTenantUpstream
+//
+//	INSERT INTO tenant_instances (
+//	    tenant_id,
+//	    subject_sub,
+//	    service_id,
+//	    subject_key,
+//	    tenant_instance_name,
+//	    internal_dns_name,
+//	    desired_state,
+//	    runtime_state,
+//	    upstream_url,
+//	    last_healthy_at,
+//	    last_error,
+//	    metadata
+//	)
+//	VALUES (
+//	    ?1,
+//	    ?2,
+//	    ?3,
+//	    ?4,
+//	    ?5,
+//	    ?6,
+//	    'enabled',
+//	    'ready',
+//	    ?7,
+//	    ?8,
+//	    NULL,
+//	    json_object('runtime_mode', 'static_upstream')
+//	)
+//	ON CONFLICT(subject_sub, service_id) DO UPDATE SET
+//	    subject_key = excluded.subject_key,
+//	    tenant_instance_name = excluded.tenant_instance_name,
+//	    internal_dns_name = excluded.internal_dns_name,
+//	    desired_state = 'enabled',
+//	    runtime_state = 'ready',
+//	    coolify_resource_id = NULL,
+//	    coolify_application_id = NULL,
+//	    upstream_url = excluded.upstream_url,
+//	    last_healthy_at = excluded.last_healthy_at,
+//	    last_error = NULL,
+//	    metadata = json_patch(tenant_instances.metadata, excluded.metadata),
+//	    updated_at = CURRENT_TIMESTAMP
+func (q *Queries) UpsertStaticTenantUpstream(ctx context.Context, arg UpsertStaticTenantUpstreamParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertStaticTenantUpstream,
+		arg.TenantID,
+		arg.SubjectSub,
+		arg.ServiceID,
+		arg.SubjectKey,
+		arg.TenantInstanceName,
+		arg.InternalDnsName,
+		arg.UpstreamUrl,
+		arg.LastHealthyAt,
+	)
+	return err
+}
+
 const UpsertSubject = `-- name: UpsertSubject :exec
 INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -508,6 +891,46 @@ type UpsertSubjectParams struct {
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertSubject(ctx context.Context, arg UpsertSubjectParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertSubject,
+		arg.SubjectSub,
+		arg.SubjectKey,
+		arg.PreferredUsername,
+		arg.Email,
+		arg.DisplayName,
+	)
+	return err
+}
+
+const UpsertSubjectPreservingMetadata = `-- name: UpsertSubjectPreservingMetadata :exec
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(subject_sub) DO UPDATE SET
+    subject_key = subjects.subject_key,
+    preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
+    email = COALESCE(excluded.email, subjects.email),
+    display_name = COALESCE(excluded.display_name, subjects.display_name),
+    updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertSubjectPreservingMetadataParams struct {
+	SubjectSub        string         `db:"subject_sub" json:"subject_sub"`
+	SubjectKey        string         `db:"subject_key" json:"subject_key"`
+	PreferredUsername sql.NullString `db:"preferred_username" json:"preferred_username"`
+	Email             sql.NullString `db:"email" json:"email"`
+	DisplayName       sql.NullString `db:"display_name" json:"display_name"`
+}
+
+// UpsertSubjectPreservingMetadata
+//
+//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
+//	VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+//	ON CONFLICT(subject_sub) DO UPDATE SET
+//	    subject_key = subjects.subject_key,
+//	    preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
+//	    email = COALESCE(excluded.email, subjects.email),
+//	    display_name = COALESCE(excluded.display_name, subjects.display_name),
+//	    updated_at = CURRENT_TIMESTAMP
+func (q *Queries) UpsertSubjectPreservingMetadata(ctx context.Context, arg UpsertSubjectPreservingMetadataParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertSubjectPreservingMetadata,
 		arg.SubjectSub,
 		arg.SubjectKey,
 		arg.PreferredUsername,

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"dragonserver/mcp-platform/internal/catalog"
 	"dragonserver/mcp-platform/internal/domain"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -184,7 +183,7 @@ func (c *AuthentikClient) ListGroups(ctx context.Context) ([]AuthentikGroup, err
 	return groups, nil
 }
 
-func (c *AuthentikClient) BuildGrantSnapshot(ctx context.Context) ([]domain.Subject, []ServiceGrant, error) {
+func (c *AuthentikClient) buildGrantSnapshot(ctx context.Context, supportedServices []string) ([]domain.Subject, []ServiceGrant, error) {
 	users, err := c.ListUsers(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -199,11 +198,6 @@ func (c *AuthentikClient) BuildGrantSnapshot(ctx context.Context) ([]domain.Subj
 		for _, userID := range group.UserIDs {
 			groupMemberships[userID] = append(groupMemberships[userID], group.Name)
 		}
-	}
-
-	supportedServices := make([]string, 0, len(catalog.DefaultCatalogV1()))
-	for _, entry := range catalog.DefaultCatalogV1() {
-		supportedServices = append(supportedServices, entry.ServiceID)
 	}
 
 	now := time.Now().UTC()
@@ -278,7 +272,12 @@ func (c *AuthentikClient) SyncStore(ctx context.Context, store *Store) error {
 		return fmt.Errorf("store is required")
 	}
 
-	subjects, grants, err := c.BuildGrantSnapshot(ctx)
+	supportedServices, err := store.ListEnabledServiceIDs(ctx)
+	if err != nil {
+		return err
+	}
+
+	subjects, grants, err := c.buildGrantSnapshot(ctx, supportedServices)
 	if err != nil {
 		return err
 	}

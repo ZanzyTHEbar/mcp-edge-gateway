@@ -112,6 +112,29 @@ VALUES (?, 'user-sub', 'mealie', 'subject-key', 'u-subject-key-mealie', 'u-subje
 	require.Equal(t, domain.TenantRuntimeStateDegraded, tenants[0].RuntimeState)
 }
 
+func TestUpsertStaticTenantUpstreamUsesPersistedSubjectKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	subject := domain.Subject{Sub: "user-sub", SubjectKey: "persisted-key", PreferredUsername: "user"}
+	require.NoError(t, store.UpsertSubject(ctx, subject))
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, domain.Subject{Sub: subject.Sub}, "mealie"))
+
+	require.NoError(t, store.UpsertStaticTenantUpstream(ctx, domain.Subject{Sub: subject.Sub, SubjectKey: "operator-provided-wrong-key"}, "mealie", "https://mcp.lan", time.Now().UTC()))
+
+	tenants, err := store.ListTenantInstances(ctx)
+	require.NoError(t, err)
+	require.Len(t, tenants, 1)
+	require.Equal(t, "persisted-key", tenants[0].SubjectKey)
+	require.Equal(t, domain.BuildTenantInstanceName("mealie", "persisted-key"), tenants[0].TenantInstanceName)
+}
+
 func TestSeedServiceCatalogDisablesStaleEntriesAndReenablesDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -152,4 +175,97 @@ VALUES ('stale-service', 'Stale', 'stale', 'streamable-http', 8080, '/stale/mcp'
 	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT enabled FROM service_catalog WHERE service_id = 'stale-service'`).Scan(&staleEnabled))
 	require.Equal(t, 1, mealieEnabled)
 	require.Equal(t, 0, staleEnabled)
+}
+
+func TestManualServiceGrantSurvivesAuthentikSnapshotSync(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, domain.Subject{Sub: "manual-sub"}, "mealie"))
+	require.NoError(t, store.SyncSubjectGrantSnapshot(ctx, nil, nil))
+
+	grants, err := store.ListSubjectServiceGrants(ctx, "manual-sub")
+	require.NoError(t, err)
+	require.Len(t, grants, 1)
+	require.Equal(t, "mealie", grants[0].ServiceID)
+	require.Equal(t, "manual", grants[0].SourceGroup)
+}
+
+func TestListSubjectServiceGrantsExcludesDisabledServices(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, domain.Subject{Sub: "manual-sub"}, "mealie"))
+	_, err = store.db.ExecContext(ctx, `UPDATE service_catalog SET enabled = 0 WHERE service_id = 'mealie'`)
+	require.NoError(t, err)
+
+	grants, err := store.ListSubjectServiceGrants(ctx, "manual-sub")
+	require.NoError(t, err)
+	require.Empty(t, grants)
+}
+
+func TestManualServiceGrantPreservesExistingSubjectMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+	require.NoError(t, store.UpsertSubject(ctx, domain.Subject{
+		Sub:               "manual-sub",
+		SubjectKey:        "manual-key",
+		PreferredUsername: "existing-user",
+		Email:             "existing@example.com",
+		DisplayName:       "Existing User",
+	}))
+
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, domain.Subject{Sub: "manual-sub"}, "mealie"))
+
+	var preferredUsername, email, displayName string
+	var subjectKey string
+	require.NoError(t, store.db.QueryRowContext(ctx, `SELECT subject_key, preferred_username, email, display_name FROM subjects WHERE subject_sub = 'manual-sub'`).Scan(&subjectKey, &preferredUsername, &email, &displayName))
+	require.Equal(t, "manual-key", subjectKey)
+	require.Equal(t, "existing-user", preferredUsername)
+	require.Equal(t, "existing@example.com", email)
+	require.Equal(t, "Existing User", displayName)
+}
+
+func TestManualGrantDeletePreservesAuthentikGrantSource(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	subject := domain.Subject{Sub: "overlap-sub", SubjectKey: "overlap-key"}
+	require.NoError(t, store.SyncSubjectGrantSnapshot(ctx, []domain.Subject{subject}, []ServiceGrant{{SubjectSub: subject.Sub, ServiceID: "mealie", SourceGroup: "mcp-service-mealie"}}))
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, subject, "mealie"))
+
+	grants, err := store.ListSubjectServiceGrants(ctx, subject.Sub)
+	require.NoError(t, err)
+	require.Len(t, grants, 1)
+	require.Equal(t, "manual", grants[0].SourceGroup)
+
+	require.NoError(t, store.DeleteManualServiceGrant(ctx, subject.Sub, "mealie"))
+	grants, err = store.ListSubjectServiceGrants(ctx, subject.Sub)
+	require.NoError(t, err)
+	require.Len(t, grants, 1)
+	require.Equal(t, "mcp-service-mealie", grants[0].SourceGroup)
 }

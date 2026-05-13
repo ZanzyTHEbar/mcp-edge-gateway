@@ -1,12 +1,18 @@
 package controlplane
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"dragonserver/mcp-platform/internal/catalog"
 	"dragonserver/mcp-platform/internal/domain"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,6 +26,75 @@ func TestShouldRequeueDelete(t *testing.T) {
 
 	stale := time.Now().UTC().Add(-(deleteRequeueInterval + time.Second))
 	require.True(t, shouldRequeueDelete(&stale))
+}
+
+func TestProbeTenantHealthUsesStaticUpstreamURL(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/mcp", r.URL.Path)
+		_, _ = w.Write([]byte(`{"transport":"streamable"}`))
+	}))
+	defer upstream.Close()
+
+	service := catalog.DefaultCatalogV1()[0]
+	runtime := &CoolifyTenantRuntime{healthClient: upstream.Client()}
+	healthy, detail, err := runtime.probeTenantHealth(context.Background(), TenantInstance{ServiceID: service.ServiceID, SubjectKey: "subject-a"}, service, "", upstream.URL+"/mcp")
+	require.NoError(t, err)
+	require.True(t, healthy)
+	require.Equal(t, "mealie returned discovery json", detail)
+}
+
+func TestStaticUpstreamRuntimeObservesDynamicServiceWithoutCoolifyProvisioning(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+
+	service := catalog.ServiceCatalogEntry{
+		ServiceID:              "custom",
+		DisplayName:            "Custom",
+		UpstreamServiceName:    "custom-mcp",
+		TransportType:          catalog.TransportTypeStreamableHTTP,
+		InternalPort:           8080,
+		PublicPath:             "/custom/mcp",
+		InternalUpstreamPath:   "/mcp",
+		HealthPath:             "/health",
+		HealthProbeExpectation: "GET returns OK",
+		ResourceProfile:        "small",
+		PersistencePolicy:      "stateless",
+		AdapterRequirement:     catalog.AdapterRequirementNone,
+	}
+	require.NoError(t, store.UpsertAdminServiceCatalogEntry(ctx, service))
+	require.NoError(t, store.UpsertManualServiceGrant(ctx, domain.Subject{Sub: "subject-sub", SubjectKey: "subject-key"}, service.ServiceID))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/health", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	require.NoError(t, store.UpsertStaticTenantUpstream(ctx, domain.Subject{Sub: "subject-sub", SubjectKey: "subject-key"}, service.ServiceID, upstream.URL+"/mcp", time.Now().UTC()))
+	_, err = store.db.ExecContext(ctx, `UPDATE tenant_instances SET runtime_state = 'degraded', last_error = 'previous failure' WHERE subject_sub = 'subject-sub' AND service_id = 'custom'`)
+	require.NoError(t, err)
+
+	tenants, err := store.ListTenantInstances(ctx)
+	require.NoError(t, err)
+	require.Len(t, tenants, 1)
+	require.Equal(t, domain.TenantRuntimeStateDegraded, tenants[0].RuntimeState)
+
+	runtime := NewCoolifyTenantRuntime(Config{}, store, &DependencyClients{}, zerolog.New(io.Discard))
+	result, err := runtime.Apply(ctx, tenants[0], TenantPlan{Action: ReconcileActionEnsure})
+	require.NoError(t, err)
+	require.Equal(t, "ready", result.Status)
+	require.Equal(t, domain.TenantRuntimeStateReady, result.ObservedState)
+
+	tenants, err = store.ListTenantInstances(ctx)
+	require.NoError(t, err)
+	require.Equal(t, domain.TenantRuntimeStateReady, tenants[0].RuntimeState)
 }
 
 func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {

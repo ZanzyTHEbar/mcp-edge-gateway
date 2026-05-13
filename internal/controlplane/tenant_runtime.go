@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ const (
 	defaultTenantImageMealie       = "mealie-mcp:latest"
 	tenantComposeNetworkAlias      = "mcp_tenant_network"
 	deleteRequeueInterval          = 2 * time.Minute
+	runtimeModeStaticUpstream      = "static_upstream"
 )
 
 type CoolifyTenantRuntime struct {
@@ -77,9 +79,15 @@ func NewCoolifyTenantRuntime(cfg Config, store *Store, clients *DependencyClient
 }
 
 func (r *CoolifyTenantRuntime) Apply(ctx context.Context, tenant TenantInstance, plan TenantPlan) (RuntimeApplyResult, error) {
-	service, ok := r.serviceByID[tenant.ServiceID]
+	service, ok, err := r.loadService(ctx, tenant.ServiceID)
+	if err != nil {
+		return RuntimeApplyResult{}, err
+	}
 	if !ok {
 		return RuntimeApplyResult{}, fmt.Errorf("service %s is not present in the tenant runtime catalog", tenant.ServiceID)
+	}
+	if tenantRuntimeMode(tenant) == runtimeModeStaticUpstream {
+		return r.applyStaticUpstream(ctx, tenant, plan, service)
 	}
 
 	switch plan.Action {
@@ -108,6 +116,43 @@ func (r *CoolifyTenantRuntime) Apply(ctx context.Context, tenant TenantInstance,
 	case ReconcileActionDelete:
 		return r.delete(ctx, tenant)
 
+	default:
+		return RuntimeApplyResult{}, fmt.Errorf("unsupported reconcile action %s", plan.Action)
+	}
+}
+
+func (r *CoolifyTenantRuntime) loadService(ctx context.Context, serviceID string) (catalog.ServiceCatalogEntry, bool, error) {
+	if service, ok := r.serviceByID[serviceID]; ok {
+		return service, true, nil
+	}
+	if r.store == nil {
+		return catalog.ServiceCatalogEntry{}, false, nil
+	}
+	service, err := r.store.GetEnabledServiceCatalogEntry(ctx, serviceID)
+	if err != nil {
+		return catalog.ServiceCatalogEntry{}, false, err
+	}
+	return service, true, nil
+}
+
+func (r *CoolifyTenantRuntime) applyStaticUpstream(ctx context.Context, tenant TenantInstance, plan TenantPlan, service catalog.ServiceCatalogEntry) (RuntimeApplyResult, error) {
+	switch plan.Action {
+	case ReconcileActionNoop, ReconcileActionEnsure, ReconcileActionEnable:
+		if strings.TrimSpace(tenant.UpstreamURL) == "" {
+			return RuntimeApplyResult{}, fmt.Errorf("static upstream url is not configured for tenant %s", tenant.TenantID)
+		}
+		return r.observeWithURL(ctx, tenant, service, "", tenant.UpstreamURL)
+	case ReconcileActionDisable:
+		if err := r.store.UpdateTenantRuntimeStatus(ctx, TenantRuntimeUpdate{
+			TenantID:     tenant.TenantID,
+			RuntimeState: domain.TenantRuntimeStateDisabled,
+			LastError:    "",
+		}); err != nil {
+			return RuntimeApplyResult{}, err
+		}
+		return RuntimeApplyResult{Status: "disabled", ObservedState: domain.TenantRuntimeStateDisabled, LastError: stringPointer("")}, nil
+	case ReconcileActionDelete:
+		return RuntimeApplyResult{Status: "deleted", ObservedState: domain.TenantRuntimeStateDeleting, LastError: stringPointer(""), DeleteCompleted: true}, nil
 	default:
 		return RuntimeApplyResult{}, fmt.Errorf("unsupported reconcile action %s", plan.Action)
 	}
@@ -346,7 +391,7 @@ func (r *CoolifyTenantRuntime) observe(ctx context.Context, tenant TenantInstanc
 }
 
 func (r *CoolifyTenantRuntime) observeWithURL(ctx context.Context, tenant TenantInstance, service catalog.ServiceCatalogEntry, serviceUUID string, upstreamURL string) (RuntimeApplyResult, error) {
-	healthy, statusDetail, err := r.probeTenantHealth(ctx, tenant, service)
+	healthy, statusDetail, err := r.probeTenantHealth(ctx, tenant, service, serviceUUID, upstreamURL)
 	if err != nil {
 		if updateErr := r.store.UpdateTenantRuntimeStatus(ctx, TenantRuntimeUpdate{
 			TenantID:          tenant.TenantID,
@@ -430,13 +475,20 @@ func (r *CoolifyTenantRuntime) renderTenant(ctx context.Context, tenant TenantIn
 	return template.Render(r.cfg, tenant, service, secretValues)
 }
 
-func (r *CoolifyTenantRuntime) probeTenantHealth(ctx context.Context, tenant TenantInstance, service catalog.ServiceCatalogEntry) (bool, string, error) {
-	expectedInternalDNSName := domain.BuildTenantInstanceName(tenant.ServiceID, tenant.SubjectKey)
-	if tenant.InternalDNSName != "" && tenant.InternalDNSName != expectedInternalDNSName {
-		return false, "", fmt.Errorf("tenant internal dns drift detected for %s", tenant.TenantID)
+func (r *CoolifyTenantRuntime) probeTenantHealth(ctx context.Context, tenant TenantInstance, service catalog.ServiceCatalogEntry, serviceUUID string, upstreamURL string) (bool, string, error) {
+	if serviceUUID != "" {
+		expectedInternalDNSName := domain.BuildTenantInstanceName(tenant.ServiceID, tenant.SubjectKey)
+		if tenant.InternalDNSName != "" && tenant.InternalDNSName != expectedInternalDNSName {
+			return false, "", fmt.Errorf("tenant internal dns drift detected for %s", tenant.TenantID)
+		}
 	}
-
-	requestURL := "http://" + expectedInternalDNSName + ":" + itoa(service.InternalPort) + service.HealthPath
+	if upstreamURL == "" {
+		upstreamURL = buildUpstreamURL(tenant, service)
+	}
+	requestURL, err := staticUpstreamHealthURL(upstreamURL, service.HealthPath)
+	if err != nil {
+		return false, "", fmt.Errorf("build tenant health url for %s: %w", tenant.TenantID, err)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return false, "", err
@@ -465,9 +517,26 @@ func (r *CoolifyTenantRuntime) probeTenantHealth(ctx context.Context, tenant Ten
 		if response.StatusCode == http.StatusOK && strings.Contains(strings.ToLower(bodyText), "streamable") {
 			return true, "mealie returned discovery json", nil
 		}
+	default:
+		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+			return true, fmt.Sprintf("%s returned healthy status %d", service.ServiceID, response.StatusCode), nil
+		}
 	}
 
 	return false, fmt.Sprintf("unexpected health response: status=%d content_type=%s body=%s", response.StatusCode, contentType, bodyText), nil
+}
+
+func tenantRuntimeMode(tenant TenantInstance) string {
+	if len(tenant.Metadata) == 0 {
+		return ""
+	}
+	var metadata struct {
+		RuntimeMode string `json:"runtime_mode"`
+	}
+	if err := json.Unmarshal(tenant.Metadata, &metadata); err != nil {
+		return ""
+	}
+	return metadata.RuntimeMode
 }
 
 func buildUpstreamURL(tenant TenantInstance, service catalog.ServiceCatalogEntry) string {

@@ -4,16 +4,42 @@ import (
 	"encoding/json"
 	"time"
 
+	"dragonserver/mcp-platform/internal/catalog"
 	"dragonserver/mcp-platform/internal/domain"
 	"dragonserver/mcp-platform/internal/ids"
 )
 
+type ServiceCatalogAdminEntry struct {
+	ServiceID              string                     `json:"service_id"`
+	DisplayName            string                     `json:"display_name"`
+	UpstreamServiceName    string                     `json:"upstream_service_name"`
+	TransportType          catalog.TransportType      `json:"transport_type"`
+	InternalPort           int                        `json:"internal_port"`
+	PublicPath             string                     `json:"public_path"`
+	InternalUpstreamPath   string                     `json:"internal_upstream_path"`
+	HealthPath             string                     `json:"health_path"`
+	HealthProbeExpectation string                     `json:"health_probe_expectation"`
+	ResourceProfile        string                     `json:"resource_profile"`
+	PersistencePolicy      string                     `json:"persistence_policy"`
+	AdapterRequirement     catalog.AdapterRequirement `json:"adapter_requirement"`
+	SecretContract         []catalog.SecretDefinition `json:"secret_contract"`
+	Enabled                bool                       `json:"enabled"`
+	Source                 string                     `json:"source"`
+}
+
 type ServiceGrant struct {
-	SubjectSub   string
-	ServiceID    string
-	SourceGroup  string
-	GrantedAt    time.Time
-	LastSyncedAt time.Time
+	SubjectSub   string    `json:"subject_sub"`
+	ServiceID    string    `json:"service_id"`
+	SourceGroup  string    `json:"source_group"`
+	GrantedAt    time.Time `json:"granted_at"`
+	LastSyncedAt time.Time `json:"last_synced_at"`
+}
+
+type StaticUpstreamBinding struct {
+	SubjectSub  string    `json:"subject_sub"`
+	ServiceID   string    `json:"service_id"`
+	UpstreamURL string    `json:"upstream_url"`
+	VerifiedAt  time.Time `json:"verified_at"`
 }
 
 type TenantInstance struct {

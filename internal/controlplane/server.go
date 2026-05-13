@@ -174,6 +174,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/health", a.handleReadiness)
 	mux.HandleFunc("/v1/services", a.handleServices)
 	mux.HandleFunc("/v1/services/", a.handleService)
+	mux.HandleFunc("/v1/subjects/", a.handleSubject)
 	return mux
 }
 

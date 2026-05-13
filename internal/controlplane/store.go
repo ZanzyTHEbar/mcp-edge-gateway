@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +50,10 @@ const controlPlaneLeaseName = "mcp-control-plane"
 const controlPlaneLeaseTTL = 2 * time.Minute
 
 const controlPlaneLeaseRenewInterval = controlPlaneLeaseTTL / 3
+
+var ErrSubjectServiceGrantNotFound = errors.New("subject service grant not found")
+var ErrCatalogBuiltinMutation = errors.New("builtin service catalog entries cannot be changed through the admin API")
+var ErrCatalogPathConflict = errors.New("service public path conflicts with an existing enabled service")
 
 func NewStore(ctx context.Context, databaseURL string, logger zerolog.Logger) (*Store, error) {
 	db, err := platformsqlite.Open(ctx, databaseURL)
@@ -178,12 +184,36 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) ListServiceCatalog(ctx context.Context) ([]catalog.ServiceCatalogEntry, error) {
+func (s *Store) ListServiceCatalog(ctx context.Context) ([]ServiceCatalogAdminEntry, error) {
 	records, err := s.queries.ListServiceCatalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list service catalog: %w", err)
 	}
-	return convertServiceCatalog(records)
+	return convertServiceCatalogAdminEntries(records)
+}
+
+func (s *Store) GetServiceCatalogAdminEntry(ctx context.Context, serviceID string) (ServiceCatalogAdminEntry, error) {
+	record, err := s.queries.GetServiceCatalogEntry(ctx, platformdb.GetServiceCatalogEntryParams{ServiceID: serviceID})
+	if err != nil {
+		return ServiceCatalogAdminEntry{}, fmt.Errorf("get service catalog entry %s: %w", serviceID, err)
+	}
+	return convertServiceCatalogAdminEntry(record)
+}
+
+func (s *Store) ListEnabledServiceIDs(ctx context.Context) ([]string, error) {
+	serviceIDs, err := s.queries.ListEnabledServiceIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled service IDs: %w", err)
+	}
+	return serviceIDs, nil
+}
+
+func (s *Store) GetEnabledServiceCatalogEntry(ctx context.Context, serviceID string) (catalog.ServiceCatalogEntry, error) {
+	record, err := s.queries.GetEnabledServiceCatalogEntry(ctx, platformdb.GetEnabledServiceCatalogEntryParams{ServiceID: serviceID})
+	if err != nil {
+		return catalog.ServiceCatalogEntry{}, fmt.Errorf("get enabled service catalog entry %s: %w", serviceID, err)
+	}
+	return convertEnabledServiceCatalogRecord(record)
 }
 
 func (s *Store) UpsertAdminServiceCatalogEntry(ctx context.Context, entry catalog.ServiceCatalogEntry) error {
@@ -191,33 +221,53 @@ func (s *Store) UpsertAdminServiceCatalogEntry(ctx context.Context, entry catalo
 	if err != nil {
 		return fmt.Errorf("marshal secret contract for %s: %w", entry.ServiceID, err)
 	}
-	if err := s.queries.UpsertServiceCatalogEntry(ctx, platformdb.UpsertServiceCatalogEntryParams{
-		ServiceID:              entry.ServiceID,
-		DisplayName:            entry.DisplayName,
-		UpstreamServiceName:    entry.UpstreamServiceName,
-		TransportType:          string(entry.TransportType),
-		InternalPort:           int64(entry.InternalPort),
-		PublicPath:             entry.PublicPath,
-		InternalUpstreamPath:   entry.InternalUpstreamPath,
-		HealthPath:             entry.HealthPath,
-		HealthProbeExpectation: entry.HealthProbeExpectation,
-		ResourceProfile:        entry.ResourceProfile,
-		PersistencePolicy:      entry.PersistencePolicy,
-		AdapterRequirement:     string(entry.AdapterRequirement),
-		SecretContract:         string(secretContract),
-		Enabled:                1,
-		Source:                 "admin_api",
-	}); err != nil {
-		return fmt.Errorf("upsert admin service catalog entry %s: %w", entry.ServiceID, err)
-	}
-	return nil
+	return s.withTx(ctx, func(q *platformdb.Queries) error {
+		if existing, err := q.GetServiceCatalogEntry(ctx, platformdb.GetServiceCatalogEntryParams{ServiceID: entry.ServiceID}); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("load existing service catalog entry %s: %w", entry.ServiceID, err)
+		} else if err == nil && existing.Source == "builtin" {
+			return ErrCatalogBuiltinMutation
+		}
+		if err := ensureNoPublicPathConflict(ctx, q, entry.ServiceID, entry.PublicPath); err != nil {
+			return err
+		}
+		if err := q.UpsertServiceCatalogEntry(ctx, platformdb.UpsertServiceCatalogEntryParams{
+			ServiceID:              entry.ServiceID,
+			DisplayName:            entry.DisplayName,
+			UpstreamServiceName:    entry.UpstreamServiceName,
+			TransportType:          string(entry.TransportType),
+			InternalPort:           int64(entry.InternalPort),
+			PublicPath:             entry.PublicPath,
+			InternalUpstreamPath:   entry.InternalUpstreamPath,
+			HealthPath:             entry.HealthPath,
+			HealthProbeExpectation: entry.HealthProbeExpectation,
+			ResourceProfile:        entry.ResourceProfile,
+			PersistencePolicy:      entry.PersistencePolicy,
+			AdapterRequirement:     string(entry.AdapterRequirement),
+			SecretContract:         string(secretContract),
+			Enabled:                1,
+			Source:                 "admin_api",
+		}); err != nil {
+			return fmt.Errorf("upsert admin service catalog entry %s: %w", entry.ServiceID, err)
+		}
+		return nil
+	})
+
 }
 
 func (s *Store) DisableServiceCatalogEntry(ctx context.Context, serviceID string) error {
-	if err := s.queries.DisableServiceCatalogEntry(ctx, platformdb.DisableServiceCatalogEntryParams{ServiceID: serviceID}); err != nil {
-		return fmt.Errorf("disable service catalog entry %s: %w", serviceID, err)
-	}
-	return nil
+	return s.withTx(ctx, func(q *platformdb.Queries) error {
+		existing, err := q.GetServiceCatalogEntry(ctx, platformdb.GetServiceCatalogEntryParams{ServiceID: serviceID})
+		if err != nil {
+			return fmt.Errorf("load existing service catalog entry %s: %w", serviceID, err)
+		}
+		if existing.Source == "builtin" {
+			return ErrCatalogBuiltinMutation
+		}
+		if err := q.DisableServiceCatalogEntry(ctx, platformdb.DisableServiceCatalogEntryParams{ServiceID: serviceID}); err != nil {
+			return fmt.Errorf("disable service catalog entry %s: %w", serviceID, err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) UpsertSubject(ctx context.Context, subject domain.Subject) error {
@@ -238,7 +288,127 @@ func (s *Store) ReplaceSubjectGrants(ctx context.Context, subjectSub string, gra
 		if err := q.DeleteSubjectGrants(ctx, platformdb.DeleteSubjectGrantsParams{SubjectSub: subjectSub}); err != nil {
 			return fmt.Errorf("delete existing grants for %s: %w", subjectSub, err)
 		}
-		return insertGrants(ctx, q, subjectSub, grants)
+		if err := q.DeleteSubjectGrantSources(ctx, platformdb.DeleteSubjectGrantSourcesParams{SubjectSub: subjectSub}); err != nil {
+			return fmt.Errorf("delete existing grant sources for %s: %w", subjectSub, err)
+		}
+		if err := insertGrants(ctx, q, subjectSub, grants); err != nil {
+			return err
+		}
+		return rebuildEffectiveServiceGrants(ctx, q)
+	})
+}
+
+func (s *Store) ListSubjectServiceGrants(ctx context.Context, subjectSub string) ([]ServiceGrant, error) {
+	rows, err := s.queries.ListSubjectServiceGrants(ctx, platformdb.ListSubjectServiceGrantsParams{SubjectSub: subjectSub})
+	if err != nil {
+		return nil, fmt.Errorf("list service grants for %s: %w", subjectSub, err)
+	}
+	grants := make([]ServiceGrant, 0, len(rows))
+	for _, row := range rows {
+		grant := ServiceGrant{
+			SubjectSub:  row.SubjectSub,
+			ServiceID:   row.ServiceID,
+			SourceGroup: row.SourceGroup,
+		}
+		grantedAt, err := parseSQLiteTime(row.GrantedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse grant granted_at: %w", err)
+		}
+		lastSyncedAt, err := parseSQLiteTime(row.LastSyncedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse grant last_synced_at: %w", err)
+		}
+		grant.GrantedAt = grantedAt
+		grant.LastSyncedAt = lastSyncedAt
+		grants = append(grants, grant)
+	}
+	return grants, nil
+}
+
+func (s *Store) UpsertManualServiceGrant(ctx context.Context, subject domain.Subject, serviceID string) error {
+	return s.withTx(ctx, func(q *platformdb.Queries) error {
+		if _, err := q.GetEnabledServiceCatalogEntry(ctx, platformdb.GetEnabledServiceCatalogEntryParams{ServiceID: serviceID}); err != nil {
+			return fmt.Errorf("load enabled service %s: %w", serviceID, err)
+		}
+		if subject.SubjectKey == "" {
+			subject.SubjectKey = domain.DeriveSubjectKey(subject.Sub)
+		}
+		if err := q.UpsertSubjectPreservingMetadata(ctx, platformdb.UpsertSubjectPreservingMetadataParams{
+			SubjectSub:        subject.Sub,
+			SubjectKey:        subject.SubjectKey,
+			PreferredUsername: sqlNullString(subject.PreferredUsername),
+			Email:             sqlNullString(subject.Email),
+			DisplayName:       sqlNullString(subject.DisplayName),
+		}); err != nil {
+			return fmt.Errorf("upsert subject %s for manual grant: %w", subject.Sub, err)
+		}
+		if err := q.UpsertManualServiceGrantSource(ctx, platformdb.UpsertManualServiceGrantSourceParams{SubjectSub: subject.Sub, ServiceID: serviceID}); err != nil {
+			return fmt.Errorf("upsert manual grant %s/%s: %w", subject.Sub, serviceID, err)
+		}
+		return rebuildEffectiveServiceGrants(ctx, q)
+	})
+}
+
+func (s *Store) DeleteManualServiceGrant(ctx context.Context, subjectSub string, serviceID string) error {
+	return s.withTx(ctx, func(q *platformdb.Queries) error {
+		if err := q.DeleteManualServiceGrantSource(ctx, platformdb.DeleteManualServiceGrantSourceParams{SubjectSub: subjectSub, ServiceID: serviceID}); err != nil {
+			return fmt.Errorf("delete manual service grant %s/%s: %w", subjectSub, serviceID, err)
+		}
+		return rebuildEffectiveServiceGrants(ctx, q)
+	})
+}
+
+func (s *Store) SubjectServiceGranted(ctx context.Context, subjectSub string, serviceID string) (bool, error) {
+	grantCount, err := s.queries.CountSubjectServiceGrant(ctx, platformdb.CountSubjectServiceGrantParams{SubjectSub: subjectSub, ServiceID: serviceID})
+	if err != nil {
+		return false, fmt.Errorf("count service grant %s/%s: %w", subjectSub, serviceID, err)
+	}
+	return grantCount > 0, nil
+}
+
+func (s *Store) UpsertStaticTenantUpstream(ctx context.Context, subject domain.Subject, serviceID string, upstreamURL string, verifiedAt time.Time) error {
+	return s.withTx(ctx, func(q *platformdb.Queries) error {
+		if _, err := q.GetEnabledServiceCatalogEntry(ctx, platformdb.GetEnabledServiceCatalogEntryParams{ServiceID: serviceID}); err != nil {
+			return fmt.Errorf("load enabled service %s: %w", serviceID, err)
+		}
+		if subject.SubjectKey == "" {
+			subject.SubjectKey = domain.DeriveSubjectKey(subject.Sub)
+		}
+		if err := q.UpsertSubjectPreservingMetadata(ctx, platformdb.UpsertSubjectPreservingMetadataParams{
+			SubjectSub:        subject.Sub,
+			SubjectKey:        subject.SubjectKey,
+			PreferredUsername: sqlNullString(subject.PreferredUsername),
+			Email:             sqlNullString(subject.Email),
+			DisplayName:       sqlNullString(subject.DisplayName),
+		}); err != nil {
+			return fmt.Errorf("upsert subject %s for static upstream: %w", subject.Sub, err)
+		}
+		persistedSubject, err := q.GetSubject(ctx, platformdb.GetSubjectParams{SubjectSub: subject.Sub})
+		if err != nil {
+			return fmt.Errorf("load subject %s for static upstream: %w", subject.Sub, err)
+		}
+		subject.SubjectKey = persistedSubject.SubjectKey
+		grantCount, err := q.CountSubjectServiceGrant(ctx, platformdb.CountSubjectServiceGrantParams{SubjectSub: subject.Sub, ServiceID: serviceID})
+		if err != nil {
+			return fmt.Errorf("count service grant %s/%s: %w", subject.Sub, serviceID, err)
+		}
+		if grantCount == 0 {
+			return ErrSubjectServiceGrantNotFound
+		}
+		tenantInstanceName := domain.BuildTenantInstanceName(serviceID, subject.SubjectKey)
+		if err := q.UpsertStaticTenantUpstream(ctx, platformdb.UpsertStaticTenantUpstreamParams{
+			TenantID:           ids.New().Bytes(),
+			SubjectSub:         subject.Sub,
+			ServiceID:          serviceID,
+			SubjectKey:         subject.SubjectKey,
+			TenantInstanceName: tenantInstanceName,
+			InternalDnsName:    tenantInstanceName,
+			UpstreamUrl:        sql.NullString{String: upstreamURL, Valid: true},
+			LastHealthyAt:      sql.NullString{String: formatSQLiteTime(verifiedAt), Valid: true},
+		}); err != nil {
+			return fmt.Errorf("upsert static upstream %s/%s: %w", subject.Sub, serviceID, err)
+		}
+		return nil
 	})
 }
 
@@ -273,14 +443,14 @@ func (s *Store) SyncSubjectGrantSnapshot(ctx context.Context, subjects []domain.
 			grantsBySubject[grant.SubjectSub] = append(grantsBySubject[grant.SubjectSub], grant)
 		}
 		for _, subjectSub := range subjectSubs {
-			if err := q.DeleteSubjectGrants(ctx, platformdb.DeleteSubjectGrantsParams{SubjectSub: subjectSub}); err != nil {
-				return fmt.Errorf("delete existing grants for %s during snapshot sync: %w", subjectSub, err)
+			if err := q.DeleteSubjectSyncedGrantSources(ctx, platformdb.DeleteSubjectSyncedGrantSourcesParams{SubjectSub: subjectSub}); err != nil {
+				return fmt.Errorf("delete existing synced grants for %s during snapshot sync: %w", subjectSub, err)
 			}
 			if err := insertGrants(ctx, q, subjectSub, grantsBySubject[subjectSub]); err != nil {
 				return err
 			}
 		}
-		return nil
+		return rebuildEffectiveServiceGrants(ctx, q)
 	})
 }
 
@@ -405,9 +575,19 @@ func insertGrants(ctx context.Context, q *platformdb.Queries, subjectSub string,
 		if lastSyncedAt.IsZero() {
 			lastSyncedAt = time.Now().UTC()
 		}
-		if err := q.InsertServiceGrant(ctx, platformdb.InsertServiceGrantParams{SubjectSub: subjectSub, ServiceID: grant.ServiceID, SourceGroup: grant.SourceGroup, GrantedAt: formatSQLiteTime(grantedAt), LastSyncedAt: formatSQLiteTime(lastSyncedAt)}); err != nil {
+		if err := q.InsertServiceGrantSource(ctx, platformdb.InsertServiceGrantSourceParams{SubjectSub: subjectSub, ServiceID: grant.ServiceID, SourceGroup: grant.SourceGroup, GrantedAt: formatSQLiteTime(grantedAt), LastSyncedAt: formatSQLiteTime(lastSyncedAt)}); err != nil {
 			return fmt.Errorf("insert grant %s/%s: %w", subjectSub, grant.ServiceID, err)
 		}
+	}
+	return nil
+}
+
+func rebuildEffectiveServiceGrants(ctx context.Context, q *platformdb.Queries) error {
+	if err := q.RebuildEffectiveServiceGrants(ctx); err != nil {
+		return fmt.Errorf("clear effective service grants: %w", err)
+	}
+	if err := q.InsertEffectiveServiceGrantsFromSources(ctx); err != nil {
+		return fmt.Errorf("insert effective service grants: %w", err)
 	}
 	return nil
 }
@@ -480,10 +660,28 @@ func enableTenantInstance(ctx context.Context, q *platformdb.Queries, tenant Ten
 	return nil
 }
 
-func convertServiceCatalog(records []platformdb.ListServiceCatalogRow) ([]catalog.ServiceCatalogEntry, error) {
-	entries := make([]catalog.ServiceCatalogEntry, 0, len(records))
+func ensureNoPublicPathConflict(ctx context.Context, q *platformdb.Queries, serviceID string, publicPath string) error {
+	records, err := q.ListServiceCatalog(ctx)
+	if err != nil {
+		return fmt.Errorf("list service catalog for path conflict check: %w", err)
+	}
+	publicPath = strings.TrimRight(publicPath, "/")
 	for _, record := range records {
-		entry := catalog.ServiceCatalogEntry{
+		if record.ServiceID == serviceID || record.Enabled == 0 {
+			continue
+		}
+		existingPath := strings.TrimRight(record.PublicPath, "/")
+		if publicPath == existingPath || strings.HasPrefix(publicPath, existingPath+"/") || strings.HasPrefix(existingPath, publicPath+"/") {
+			return fmt.Errorf("%w: %s overlaps %s", ErrCatalogPathConflict, publicPath, existingPath)
+		}
+	}
+	return nil
+}
+
+func convertServiceCatalogAdminEntries(records []platformdb.ListServiceCatalogRow) ([]ServiceCatalogAdminEntry, error) {
+	entries := make([]ServiceCatalogAdminEntry, 0, len(records))
+	for _, record := range records {
+		entry := ServiceCatalogAdminEntry{
 			ServiceID:              record.ServiceID,
 			DisplayName:            record.DisplayName,
 			UpstreamServiceName:    record.UpstreamServiceName,
@@ -496,6 +694,8 @@ func convertServiceCatalog(records []platformdb.ListServiceCatalogRow) ([]catalo
 			ResourceProfile:        record.ResourceProfile,
 			PersistencePolicy:      record.PersistencePolicy,
 			AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+			Enabled:                record.Enabled != 0,
+			Source:                 record.Source,
 		}
 		if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
 			return nil, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
@@ -503,6 +703,50 @@ func convertServiceCatalog(records []platformdb.ListServiceCatalogRow) ([]catalo
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+func convertServiceCatalogAdminEntry(record platformdb.GetServiceCatalogEntryRow) (ServiceCatalogAdminEntry, error) {
+	entry := ServiceCatalogAdminEntry{
+		ServiceID:              record.ServiceID,
+		DisplayName:            record.DisplayName,
+		UpstreamServiceName:    record.UpstreamServiceName,
+		TransportType:          catalog.TransportType(record.TransportType),
+		InternalPort:           int(record.InternalPort),
+		PublicPath:             record.PublicPath,
+		InternalUpstreamPath:   record.InternalUpstreamPath,
+		HealthPath:             record.HealthPath,
+		HealthProbeExpectation: record.HealthProbeExpectation,
+		ResourceProfile:        record.ResourceProfile,
+		PersistencePolicy:      record.PersistencePolicy,
+		AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+		Enabled:                record.Enabled != 0,
+		Source:                 record.Source,
+	}
+	if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
+		return ServiceCatalogAdminEntry{}, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
+	}
+	return entry, nil
+}
+
+func convertEnabledServiceCatalogRecord(record platformdb.GetEnabledServiceCatalogEntryRow) (catalog.ServiceCatalogEntry, error) {
+	entry := catalog.ServiceCatalogEntry{
+		ServiceID:              record.ServiceID,
+		DisplayName:            record.DisplayName,
+		UpstreamServiceName:    record.UpstreamServiceName,
+		TransportType:          catalog.TransportType(record.TransportType),
+		InternalPort:           int(record.InternalPort),
+		PublicPath:             record.PublicPath,
+		InternalUpstreamPath:   record.InternalUpstreamPath,
+		HealthPath:             record.HealthPath,
+		HealthProbeExpectation: record.HealthProbeExpectation,
+		ResourceProfile:        record.ResourceProfile,
+		PersistencePolicy:      record.PersistencePolicy,
+		AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+	}
+	if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
+		return catalog.ServiceCatalogEntry{}, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
+	}
+	return entry, nil
 }
 
 func convertTenantInstances(records []platformdb.TenantInstance) ([]TenantInstance, error) {

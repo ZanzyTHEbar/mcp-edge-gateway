@@ -124,6 +124,9 @@ func TestRootDiscoveryReturnsCatalogAndMetadataLinks(t *testing.T) {
 	require.Len(t, services, 3)
 	require.Contains(t, res.Body.String(), `"id":"mealie"`)
 	require.Contains(t, res.Body.String(), `"path":"/mealie/mcp"`)
+	require.Contains(t, res.Body.String(), `"url":"https://mcp.example.com/mealie/mcp"`)
+	require.Contains(t, res.Body.String(), `"resource":"https://mcp.example.com/mealie/mcp"`)
+	require.Contains(t, res.Body.String(), `"protected_resource_metadata_url":"https://mcp.example.com/.well-known/oauth-protected-resource/mealie"`)
 	require.Contains(t, res.Body.String(), `"scope":"mcp:mealie"`)
 
 	oauth, ok := payload["oauth"].(map[string]any)

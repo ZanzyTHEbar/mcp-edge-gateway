@@ -2,7 +2,9 @@ package controlplane
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -60,6 +62,14 @@ func (a *App) handleService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+	case http.MethodGet:
+		entry, err := a.store.GetServiceCatalogAdminEntry(r.Context(), serviceID)
+		if err != nil {
+			status, code := catalogAdminErrorResponse(err)
+			writeJSON(w, status, map[string]any{"error": code})
+			return
+		}
+		writeJSON(w, http.StatusOK, entry)
 	case http.MethodPut:
 		a.handleServicePut(w, r, serviceID)
 	case http.MethodDelete:
@@ -68,12 +78,13 @@ func (a *App) handleService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.store.DisableServiceCatalogEntry(r.Context(), serviceID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "disable_service_failed"})
+			status, code := catalogAdminErrorResponse(err)
+			writeJSON(w, status, map[string]any{"error": code})
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		w.Header().Set("Allow", strings.Join([]string{http.MethodPut, http.MethodDelete}, ", "))
+		w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodPut, http.MethodDelete}, ", "))
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed"})
 	}
 }
@@ -106,10 +117,33 @@ func (a *App) handleServicePut(w http.ResponseWriter, r *http.Request, serviceID
 		return
 	}
 	if err := a.store.UpsertAdminServiceCatalogEntry(r.Context(), entry); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "upsert_service_failed"})
+		status, code := catalogAdminErrorResponse(err)
+		writeJSON(w, status, map[string]any{"error": code})
 		return
 	}
-	writeJSON(w, http.StatusOK, entry)
+	adminEntry, err := a.store.GetServiceCatalogAdminEntry(r.Context(), entry.ServiceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "load_service_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, adminEntry)
+}
+
+func catalogAdminErrorResponse(err error) (int, string) {
+	if errors.Is(err, ErrCatalogBuiltinMutation) {
+		return http.StatusConflict, "builtin_service_locked"
+	}
+	if errors.Is(err, ErrCatalogPathConflict) || sqliteUniqueConstraint(err) {
+		return http.StatusConflict, "public_path_conflict"
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound, "service_not_found"
+	}
+	return http.StatusInternalServerError, "service_catalog_operation_failed"
+}
+
+func sqliteUniqueConstraint(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 func (a *App) requireAdminToken(w http.ResponseWriter, r *http.Request) bool {
@@ -165,17 +199,14 @@ func validateServiceCatalogEntry(entry catalog.ServiceCatalogEntry) error {
 	if entry.InternalPort < 1 || entry.InternalPort > 65535 {
 		return fmt.Errorf("internal_port must be between 1 and 65535")
 	}
-	for _, field := range []struct {
-		name  string
-		value string
-	}{
-		{name: "public_path", value: entry.PublicPath},
-		{name: "internal_upstream_path", value: entry.InternalUpstreamPath},
-		{name: "health_path", value: entry.HealthPath},
-	} {
-		if field.value == "" || !strings.HasPrefix(field.value, "/") {
-			return fmt.Errorf("%s must be an absolute path", field.name)
-		}
+	if err := validateCatalogPath("public_path", entry.PublicPath, false); err != nil {
+		return err
+	}
+	if err := validateCatalogPath("internal_upstream_path", entry.InternalUpstreamPath, true); err != nil {
+		return err
+	}
+	if err := validateCatalogPath("health_path", entry.HealthPath, true); err != nil {
+		return err
 	}
 	if publicPathReservedForControlPlane(entry.PublicPath) {
 		return fmt.Errorf("public_path conflicts with a reserved edge route")
@@ -183,6 +214,36 @@ func validateServiceCatalogEntry(entry catalog.ServiceCatalogEntry) error {
 	for _, secret := range entry.SecretContract {
 		if strings.TrimSpace(secret.Key) == "" {
 			return fmt.Errorf("secret_contract key is required")
+		}
+	}
+	return nil
+}
+
+func validateCatalogPath(name string, value string, allowRoot bool) error {
+	if value == "" || !strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%s must be an absolute path", name)
+	}
+	if value == "/" {
+		if allowRoot {
+			return nil
+		}
+		return fmt.Errorf("%s must not be root", name)
+	}
+	if strings.Contains(value, "//") || strings.Contains(value, `\`) || strings.ContainsAny(value, "?# ") {
+		return fmt.Errorf("%s contains an invalid path segment", name)
+	}
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return fmt.Errorf("%s contains an encoded slash", name)
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains a control character", name)
+		}
+	}
+	for _, segment := range strings.Split(strings.Trim(value, "/"), "/") {
+		if segment == "." || segment == ".." || segment == "" {
+			return fmt.Errorf("%s contains an invalid path segment", name)
 		}
 	}
 	return nil

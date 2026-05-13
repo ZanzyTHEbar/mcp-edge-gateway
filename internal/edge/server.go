@@ -206,12 +206,16 @@ func (s *Server) handleRootDiscovery(w http.ResponseWriter, r *http.Request) {
 	if snapshot := s.catalogCache.Current(); snapshot != nil {
 		services = make([]map[string]any, 0, len(snapshot.entries))
 		for _, service := range snapshot.entries {
+			serviceURL := s.publicURL + service.PublicPath
 			services = append(services, map[string]any{
-				"id":           service.ServiceID,
-				"display_name": service.DisplayName,
-				"path":         service.PublicPath,
-				"scope":        "mcp:" + service.ServiceID,
-				"transport":    service.TransportType,
+				"id":                              service.ServiceID,
+				"display_name":                    service.DisplayName,
+				"path":                            service.PublicPath,
+				"url":                             serviceURL,
+				"resource":                        serviceURL,
+				"protected_resource_metadata_url": s.publicURL + "/.well-known/oauth-protected-resource/" + service.ServiceID,
+				"scope":                           "mcp:" + service.ServiceID,
+				"transport":                       service.TransportType,
 			})
 		}
 	}

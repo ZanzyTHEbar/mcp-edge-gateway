@@ -3,8 +3,10 @@ package edge
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -14,6 +16,8 @@ import (
 
 var ErrTenantUpstreamNotConfigured = errors.New("tenant upstream not configured")
 var ErrTenantNotReady = errors.New("tenant is not ready")
+
+var lookupTenantUpstreamIP = net.LookupIP
 
 type UpstreamTarget struct {
 	Service catalog.ServiceCatalogEntry
@@ -121,10 +125,64 @@ func (r *DatabaseResolver) Resolve(ctx context.Context, serviceID string, subjec
 	if parsedURL.Scheme == "" || parsedURL.Host == "" {
 		return UpstreamTarget{}, fmt.Errorf("tenant upstream url is incomplete for %s/%s", subjectSub, serviceID)
 	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return UpstreamTarget{}, fmt.Errorf("tenant upstream url scheme is not allowed for %s/%s", subjectSub, serviceID)
+	}
+	if tenantRuntimeModeStatic(record.Metadata) {
+		if err := validateStaticTenantUpstreamHost(parsedURL.Hostname()); err != nil {
+			return UpstreamTarget{}, fmt.Errorf("static tenant upstream host is not allowed for %s/%s: %w", subjectSub, serviceID, err)
+		}
+	} else {
+		if parsedURL.Scheme != "http" {
+			return UpstreamTarget{}, fmt.Errorf("tenant upstream url scheme does not match provisioned runtime for %s/%s", subjectSub, serviceID)
+		}
+		if parsedURL.Hostname() != record.InternalDnsName {
+			return UpstreamTarget{}, fmt.Errorf("tenant upstream host does not match internal DNS name for %s/%s", subjectSub, serviceID)
+		}
+		if parsedURL.Port() != fmt.Sprintf("%d", service.InternalPort) {
+			return UpstreamTarget{}, fmt.Errorf("tenant upstream port does not match service catalog for %s/%s", subjectSub, serviceID)
+		}
+		if strings.TrimRight(parsedURL.Path, "/") != strings.TrimRight(service.InternalUpstreamPath, "/") {
+			return UpstreamTarget{}, fmt.Errorf("tenant upstream path does not match service catalog for %s/%s", subjectSub, serviceID)
+		}
+	}
 	return UpstreamTarget{
 		Service: service,
 		BaseURL: parsedURL,
 	}, nil
+}
+
+func validateStaticTenantUpstreamHost(host string) error {
+	if ip := net.ParseIP(host); ip != nil {
+		if !allowedTenantUpstreamIP(ip) {
+			return fmt.Errorf("ip address is not allowed")
+		}
+		return nil
+	}
+	ips, err := lookupTenantUpstreamIP(host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("host could not be resolved")
+	}
+	for _, ip := range ips {
+		if !allowedTenantUpstreamIP(ip) {
+			return fmt.Errorf("resolved ip address is not allowed")
+		}
+	}
+	return nil
+}
+
+func allowedTenantUpstreamIP(ip net.IP) bool {
+	return !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast()
+}
+
+func tenantRuntimeModeStatic(metadata string) bool {
+	var payload struct {
+		RuntimeMode string `json:"runtime_mode"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &payload); err != nil {
+		return false
+	}
+	return payload.RuntimeMode == "static_upstream"
 }
 
 func addUpstream(upstreams map[string]*url.URL, serviceID string, rawURL string) error {
@@ -135,6 +193,12 @@ func addUpstream(upstreams map[string]*url.URL, serviceID string, rawURL string)
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return err
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("fixture upstream %s must use http or https", serviceID)
+	}
+	if parsedURL.Host == "" {
+		return fmt.Errorf("fixture upstream %s must include a host", serviceID)
 	}
 
 	upstreams[serviceID] = parsedURL

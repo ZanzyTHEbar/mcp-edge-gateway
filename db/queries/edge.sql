@@ -137,8 +137,10 @@ ON CONFLICT(subject_sub) DO UPDATE SET
 
 -- name: GetTenantUpstream :one
 SELECT COALESCE(upstream_url, '') AS upstream_url,
+       internal_dns_name,
        desired_state,
-       runtime_state
+       runtime_state,
+       metadata
 FROM tenant_instances
 WHERE subject_sub = sqlc.arg(subject_sub)
   AND service_id = sqlc.arg(service_id);

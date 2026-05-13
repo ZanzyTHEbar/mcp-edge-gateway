@@ -721,8 +721,10 @@ func (q *Queries) GetPendingLogin(ctx context.Context, arg GetPendingLoginParams
 
 const GetTenantUpstream = `-- name: GetTenantUpstream :one
 SELECT COALESCE(upstream_url, '') AS upstream_url,
+       internal_dns_name,
        desired_state,
-       runtime_state
+       runtime_state,
+       metadata
 FROM tenant_instances
 WHERE subject_sub = ?1
   AND service_id = ?2
@@ -734,23 +736,33 @@ type GetTenantUpstreamParams struct {
 }
 
 type GetTenantUpstreamRow struct {
-	UpstreamUrl  string `db:"upstream_url" json:"upstream_url"`
-	DesiredState string `db:"desired_state" json:"desired_state"`
-	RuntimeState string `db:"runtime_state" json:"runtime_state"`
+	UpstreamUrl     string `db:"upstream_url" json:"upstream_url"`
+	InternalDnsName string `db:"internal_dns_name" json:"internal_dns_name"`
+	DesiredState    string `db:"desired_state" json:"desired_state"`
+	RuntimeState    string `db:"runtime_state" json:"runtime_state"`
+	Metadata        string `db:"metadata" json:"metadata"`
 }
 
 // GetTenantUpstream
 //
 //	SELECT COALESCE(upstream_url, '') AS upstream_url,
+//	       internal_dns_name,
 //	       desired_state,
-//	       runtime_state
+//	       runtime_state,
+//	       metadata
 //	FROM tenant_instances
 //	WHERE subject_sub = ?1
 //	  AND service_id = ?2
 func (q *Queries) GetTenantUpstream(ctx context.Context, arg GetTenantUpstreamParams) (GetTenantUpstreamRow, error) {
 	row := q.db.QueryRowContext(ctx, GetTenantUpstream, arg.SubjectSub, arg.ServiceID)
 	var i GetTenantUpstreamRow
-	err := row.Scan(&i.UpstreamUrl, &i.DesiredState, &i.RuntimeState)
+	err := row.Scan(
+		&i.UpstreamUrl,
+		&i.InternalDnsName,
+		&i.DesiredState,
+		&i.RuntimeState,
+		&i.Metadata,
+	)
 	return i, err
 }
 

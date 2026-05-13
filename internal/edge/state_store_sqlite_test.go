@@ -2,12 +2,14 @@ package edge
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"dragonserver/mcp-platform/internal/controlplane"
+	"dragonserver/mcp-platform/internal/domain"
 	"dragonserver/mcp-platform/internal/platform/sqlite/platformdb"
 
 	"github.com/go-oauth2/oauth2/v4/models"
@@ -179,4 +181,84 @@ VALUES (?, ?, ?, 'mealie', 'https://example.com/callback', 'mcp:mealie', ?, ?, 3
 	auditCount, err := storeValue.queries.CountAuditEventsByType(ctx, platformdb.CountAuditEventsByTypeParams{EventType: "test.audit"})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), auditCount)
+}
+
+func TestDatabaseResolverAllowsStaticUpstreamExternalHost(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	databaseURL := "file:" + filepath.Join(t.TempDir(), "mcp-platform.db")
+
+	cpStore, err := controlplane.NewStore(ctx, databaseURL, logger)
+	require.NoError(t, err)
+	defer cpStore.Close()
+	require.NoError(t, cpStore.RunMigrations(ctx))
+	require.NoError(t, cpStore.SeedServiceCatalog(ctx))
+
+	subject := domain.Subject{Sub: "static-user", SubjectKey: "static-user"}
+	require.NoError(t, cpStore.UpsertManualServiceGrant(ctx, subject, "mealie"))
+	require.NoError(t, cpStore.UpsertStaticTenantUpstream(ctx, subject, "mealie", "https://mcp.lan:9443", time.Now().UTC()))
+
+	secretPath := filepath.Join(t.TempDir(), "session-key")
+	require.NoError(t, os.WriteFile(secretPath, []byte("test-session-encryption-key"), 0o600))
+	edgeStore, err := newSQLiteEdgeStateStore(ctx, Config{PlatformDatabaseURL: databaseURL, SessionEncryptionKeyPath: secretPath}, logger)
+	require.NoError(t, err)
+	defer edgeStore.Close()
+
+	cache := NewCatalogCache(edgeStore, logger)
+	require.NoError(t, cache.Refresh(ctx))
+	resolver, err := NewDatabaseResolver(cache, edgeStore)
+	require.NoError(t, err)
+	previousLookup := lookupTenantUpstreamIP
+	lookupTenantUpstreamIP = func(host string) ([]net.IP, error) {
+		require.Equal(t, "mcp.lan", host)
+		return []net.IP{net.ParseIP("192.168.1.10")}, nil
+	}
+	t.Cleanup(func() { lookupTenantUpstreamIP = previousLookup })
+
+	target, err := resolver.Resolve(ctx, "mealie", subject.Sub)
+	require.NoError(t, err)
+	require.Equal(t, "mcp.lan:9443", target.BaseURL.Host)
+}
+
+func TestDatabaseResolverRejectsProvisionedUpstreamHostDrift(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	databaseURL := "file:" + filepath.Join(t.TempDir(), "mcp-platform.db")
+
+	cpStore, err := controlplane.NewStore(ctx, databaseURL, logger)
+	require.NoError(t, err)
+	defer cpStore.Close()
+	require.NoError(t, cpStore.RunMigrations(ctx))
+	require.NoError(t, cpStore.SeedServiceCatalog(ctx))
+	subject := domain.Subject{Sub: "provisioned-user", SubjectKey: "provisioned-user"}
+	require.NoError(t, cpStore.UpsertSubject(ctx, subject))
+	require.NoError(t, cpStore.ReplaceSubjectGrants(ctx, subject.Sub, []controlplane.ServiceGrant{{SubjectSub: subject.Sub, ServiceID: "mealie", SourceGroup: "manual", GrantedAt: time.Now().UTC(), LastSyncedAt: time.Now().UTC()}}))
+	require.NoError(t, cpStore.ReconcileDesiredTenants(ctx))
+	tenants, err := cpStore.ListTenantInstances(ctx)
+	require.NoError(t, err)
+	require.Len(t, tenants, 1)
+	now := time.Now().UTC()
+	require.NoError(t, cpStore.UpdateTenantRuntimeStatus(ctx, controlplane.TenantRuntimeUpdate{TenantID: tenants[0].TenantID, RuntimeState: domain.TenantRuntimeStateReady, UpstreamURL: "http://unexpected:3031", LastHealthyAt: &now}))
+
+	secretPath := filepath.Join(t.TempDir(), "session-key")
+	require.NoError(t, os.WriteFile(secretPath, []byte("test-session-encryption-key"), 0o600))
+	edgeStore, err := newSQLiteEdgeStateStore(ctx, Config{PlatformDatabaseURL: databaseURL, SessionEncryptionKeyPath: secretPath}, logger)
+	require.NoError(t, err)
+	defer edgeStore.Close()
+
+	cache := NewCatalogCache(edgeStore, logger)
+	require.NoError(t, cache.Refresh(ctx))
+	resolver, err := NewDatabaseResolver(cache, edgeStore)
+	require.NoError(t, err)
+
+	_, err = resolver.Resolve(ctx, "mealie", "provisioned-user")
+	require.ErrorContains(t, err, "tenant upstream host does not match internal DNS name")
+
+	require.NoError(t, cpStore.UpdateTenantRuntimeStatus(ctx, controlplane.TenantRuntimeUpdate{TenantID: tenants[0].TenantID, RuntimeState: domain.TenantRuntimeStateReady, UpstreamURL: "http://" + tenants[0].InternalDNSName + ":9999/mcp", LastHealthyAt: &now}))
+	_, err = resolver.Resolve(ctx, "mealie", "provisioned-user")
+	require.ErrorContains(t, err, "tenant upstream port does not match service catalog")
+
+	require.NoError(t, cpStore.UpdateTenantRuntimeStatus(ctx, controlplane.TenantRuntimeUpdate{TenantID: tenants[0].TenantID, RuntimeState: domain.TenantRuntimeStateReady, UpstreamURL: "http://" + tenants[0].InternalDNSName + ":3031/wrong", LastHealthyAt: &now}))
+	_, err = resolver.Resolve(ctx, "mealie", "provisioned-user")
+	require.ErrorContains(t, err, "tenant upstream path does not match service catalog")
 }

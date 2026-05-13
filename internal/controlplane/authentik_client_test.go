@@ -3,9 +3,13 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+
+	"dragonserver/mcp-platform/internal/catalog"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -96,7 +100,7 @@ func TestAuthentikClientBuildGrantSnapshot(t *testing.T) {
 	client, err := NewAuthentikClient(server.URL, "client-id", "client-secret", zerolog.Nop())
 	require.NoError(t, err)
 
-	subjects, grants, err := client.BuildGrantSnapshot(context.Background())
+	subjects, grants, err := client.buildGrantSnapshot(context.Background(), testBuiltinServiceIDs())
 	require.NoError(t, err)
 	require.Len(t, subjects, 3)
 	require.Len(t, grants, 4)
@@ -231,7 +235,7 @@ func TestAuthentikClientBuildGrantSnapshotSkipsMalformedRecordsAndUnknownMapping
 	client, err := NewAuthentikClient(server.URL, "client-id", "client-secret", zerolog.Nop())
 	require.NoError(t, err)
 
-	subjects, grants, err := client.BuildGrantSnapshot(context.Background())
+	subjects, grants, err := client.buildGrantSnapshot(context.Background(), testBuiltinServiceIDs())
 	require.NoError(t, err)
 	require.Len(t, subjects, 2)
 	require.Len(t, grants, 4)
@@ -250,6 +254,115 @@ func TestAuthentikClientBuildGrantSnapshotSkipsMalformedRecordsAndUnknownMapping
 	require.Equal(t, "mcp-admin", grantSet["subject-sub-3::memory"])
 	_, hasUnknownGrant := grantSet["subject-sub-3::unknown"]
 	require.False(t, hasUnknownGrant)
+}
+
+func TestAuthentikClientSyncStoreUsesEnabledServiceCatalog(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := NewStore(ctx, "file:"+filepath.Join(t.TempDir(), "mcp-platform.db"), zerolog.New(io.Discard))
+	require.NoError(t, err)
+	defer store.Close()
+	require.NoError(t, store.RunMigrations(ctx))
+	require.NoError(t, store.SeedServiceCatalog(ctx))
+	_, err = store.db.ExecContext(ctx, `UPDATE service_catalog SET enabled = 0 WHERE service_id = 'memory'`)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertAdminServiceCatalogEntry(ctx, catalog.ServiceCatalogEntry{
+		ServiceID:              "custom",
+		DisplayName:            "Custom MCP",
+		UpstreamServiceName:    "custom-mcp",
+		TransportType:          catalog.TransportTypeStreamableHTTP,
+		InternalPort:           7070,
+		PublicPath:             "/custom/mcp",
+		InternalUpstreamPath:   "/mcp",
+		HealthPath:             "/health",
+		HealthProbeExpectation: "GET returns OK",
+		ResourceProfile:        "small",
+		PersistencePolicy:      "stateless",
+		AdapterRequirement:     catalog.AdapterRequirementNone,
+	}))
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]any{
+				"issuer":                 server.URL,
+				"authorization_endpoint": server.URL + "/authorize",
+				"token_endpoint":         server.URL + "/token",
+				"jwks_uri":               server.URL + "/keys",
+			})
+		case "/token":
+			writeTestJSON(t, w, map[string]any{
+				"access_token": "authentik-token",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		case "/api/v3/core/users/":
+			writeTestJSON(t, w, map[string]any{
+				"next": "",
+				"results": []map[string]any{
+					{
+						"pk":        1,
+						"uid":       "subject-sub-1",
+						"username":  "alice",
+						"name":      "Alice",
+						"email":     "alice@example.com",
+						"is_active": true,
+						"attributes": map[string]any{
+							"sub": "subject-sub-1",
+						},
+					},
+					{
+						"pk":         2,
+						"uid":        "subject-sub-2",
+						"username":   "bob",
+						"name":       "Bob",
+						"email":      "bob@example.com",
+						"is_active":  true,
+						"attributes": map[string]any{},
+					},
+				},
+			})
+		case "/api/v3/core/groups/":
+			writeTestJSON(t, w, map[string]any{
+				"next": "",
+				"results": []map[string]any{
+					{"pk": 11, "name": "mcp-service-custom", "users": []any{1}},
+					{"pk": 12, "name": "mcp-admin", "users": []any{2}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewAuthentikClient(server.URL, "client-id", "client-secret", zerolog.Nop())
+	require.NoError(t, err)
+	require.NoError(t, client.SyncStore(ctx, store))
+
+	grants, err := store.queries.ListDesiredTenantSpecs(ctx)
+	require.NoError(t, err)
+	grantSet := make(map[string]string)
+	for _, grant := range grants {
+		grantSet[grant.SubjectSub+"::"+grant.ServiceID] = grant.ServiceID
+	}
+	require.Equal(t, map[string]string{
+		"subject-sub-1::custom":       "custom",
+		"subject-sub-2::actualbudget": "actualbudget",
+		"subject-sub-2::custom":       "custom",
+		"subject-sub-2::mealie":       "mealie",
+	}, grantSet)
+}
+
+func testBuiltinServiceIDs() []string {
+	services := catalog.DefaultCatalogV1()
+	serviceIDs := make([]string, 0, len(services))
+	for _, service := range services {
+		serviceIDs = append(serviceIDs, service.ServiceID)
+	}
+	return serviceIDs
 }
 
 func TestAuthentikClientIncludesResponseBodyInHTTPStatusErrors(t *testing.T) {

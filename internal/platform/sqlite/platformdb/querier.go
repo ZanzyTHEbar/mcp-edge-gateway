@@ -71,6 +71,15 @@ type Querier interface {
 	//  FROM audit_events
 	//  WHERE event_type = ?1
 	CountAuditEventsByType(ctx context.Context, arg CountAuditEventsByTypeParams) (int64, error)
+	//CountSubjectServiceGrant
+	//
+	//  SELECT COUNT(*)
+	//  FROM service_grants
+	//  JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+	//  WHERE service_grants.subject_sub = ?1
+	//    AND service_grants.service_id = ?2
+	//    AND service_catalog.enabled = 1
+	CountSubjectServiceGrant(ctx context.Context, arg CountSubjectServiceGrantParams) (int64, error)
 	//CreateOAuthClient
 	//
 	//  INSERT INTO oauth_clients (client_id, client_name, created_by_subject_sub, redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, client_secret_hash, metadata, created_at, updated_at)
@@ -78,12 +87,19 @@ type Querier interface {
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
 	//DeleteAllServiceGrants
 	//
-	//  DELETE FROM service_grants
+	//  DELETE FROM service_grant_sources WHERE source_group <> 'manual'
 	DeleteAllServiceGrants(ctx context.Context) error
 	//DeleteBrowserSession
 	//
 	//  DELETE FROM edge_browser_sessions WHERE session_id = ?1
 	DeleteBrowserSession(ctx context.Context, arg DeleteBrowserSessionParams) error
+	//DeleteManualServiceGrantSource
+	//
+	//  DELETE FROM service_grant_sources
+	//  WHERE subject_sub = ?1
+	//    AND service_id = ?2
+	//    AND source_group = 'manual'
+	DeleteManualServiceGrantSource(ctx context.Context, arg DeleteManualServiceGrantSourceParams) error
 	//DeleteOAuthSessionByAccessHash
 	//
 	//  DELETE FROM oauth_sessions WHERE access_token_hash = ?1
@@ -102,12 +118,24 @@ type Querier interface {
 	DeletePendingLogin(ctx context.Context, arg DeletePendingLoginParams) error
 	//DeleteStaleServiceGrants
 	//
-	//  DELETE FROM service_grants WHERE subject_sub NOT IN (/*SLICE:subject_subs*/?)
+	//  DELETE FROM service_grant_sources
+	//  WHERE source_group <> 'manual'
+	//    AND subject_sub NOT IN (/*SLICE:subject_subs*/?)
 	DeleteStaleServiceGrants(ctx context.Context, arg DeleteStaleServiceGrantsParams) error
+	//DeleteSubjectGrantSources
+	//
+	//  DELETE FROM service_grant_sources WHERE subject_sub = ?1
+	DeleteSubjectGrantSources(ctx context.Context, arg DeleteSubjectGrantSourcesParams) error
 	//DeleteSubjectGrants
 	//
 	//  DELETE FROM service_grants WHERE subject_sub = ?1
 	DeleteSubjectGrants(ctx context.Context, arg DeleteSubjectGrantsParams) error
+	//DeleteSubjectSyncedGrantSources
+	//
+	//  DELETE FROM service_grant_sources
+	//  WHERE subject_sub = ?1
+	//    AND source_group <> 'manual'
+	DeleteSubjectSyncedGrantSources(ctx context.Context, arg DeleteSubjectSyncedGrantSourcesParams) error
 	//DeleteTenantInstance
 	//
 	//  DELETE FROM tenant_instances WHERE tenant_id = ?1
@@ -157,6 +185,29 @@ type Querier interface {
 	//  FROM edge_browser_sessions
 	//  WHERE session_id = ?1
 	GetBrowserSession(ctx context.Context, arg GetBrowserSessionParams) (GetBrowserSessionRow, error)
+	//GetEnabledServiceCatalogEntry
+	//
+	//  SELECT service_id,
+	//      display_name,
+	//      upstream_service_name,
+	//      transport_type,
+	//      internal_port,
+	//      public_path,
+	//      internal_upstream_path,
+	//      health_path,
+	//      health_probe_expectation,
+	//      resource_profile,
+	//      persistence_policy,
+	//      adapter_requirement,
+	//      secret_contract,
+	//      enabled,
+	//      source,
+	//      created_at,
+	//      updated_at
+	//  FROM service_catalog
+	//  WHERE service_id = ?1
+	//    AND enabled = 1
+	GetEnabledServiceCatalogEntry(ctx context.Context, arg GetEnabledServiceCatalogEntryParams) (GetEnabledServiceCatalogEntryRow, error)
 	//GetOAuthClient
 	//
 	//  SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
@@ -187,11 +238,45 @@ type Querier interface {
 	//  FROM edge_pending_logins
 	//  WHERE state = ?1
 	GetPendingLogin(ctx context.Context, arg GetPendingLoginParams) (GetPendingLoginRow, error)
+	//GetServiceCatalogEntry
+	//
+	//  SELECT service_id,
+	//      display_name,
+	//      upstream_service_name,
+	//      transport_type,
+	//      internal_port,
+	//      public_path,
+	//      internal_upstream_path,
+	//      health_path,
+	//      health_probe_expectation,
+	//      resource_profile,
+	//      persistence_policy,
+	//      adapter_requirement,
+	//      secret_contract,
+	//      enabled,
+	//      source,
+	//      created_at,
+	//      updated_at
+	//  FROM service_catalog
+	//  WHERE service_id = ?1
+	GetServiceCatalogEntry(ctx context.Context, arg GetServiceCatalogEntryParams) (GetServiceCatalogEntryRow, error)
+	//GetSubject
+	//
+	//  SELECT subject_sub,
+	//         subject_key,
+	//         preferred_username,
+	//         email,
+	//         display_name
+	//  FROM subjects
+	//  WHERE subject_sub = ?1
+	GetSubject(ctx context.Context, arg GetSubjectParams) (GetSubjectRow, error)
 	//GetTenantUpstream
 	//
 	//  SELECT COALESCE(upstream_url, '') AS upstream_url,
+	//         internal_dns_name,
 	//         desired_state,
-	//         runtime_state
+	//         runtime_state,
+	//         metadata
 	//  FROM tenant_instances
 	//  WHERE subject_sub = ?1
 	//    AND service_id = ?2
@@ -201,16 +286,30 @@ type Querier interface {
 	//  INSERT INTO audit_events (event_id, correlation_id, actor_subject_sub, service_id, event_type, event_status, payload)
 	//  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) error
+	//InsertEffectiveServiceGrantsFromSources
+	//
+	//  INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+	//  SELECT subject_sub,
+	//         service_id,
+	//         CASE WHEN SUM(CASE WHEN source_group = 'manual' THEN 1 ELSE 0 END) > 0 THEN 'manual' ELSE MIN(source_group) END AS source_group,
+	//         MIN(granted_at) AS granted_at,
+	//         MAX(last_synced_at) AS last_synced_at
+	//  FROM service_grant_sources
+	//  GROUP BY subject_sub, service_id
+	InsertEffectiveServiceGrantsFromSources(ctx context.Context) error
 	//InsertReconcileRun
 	//
 	//  INSERT INTO reconcile_runs (run_id, tenant_id, desired_state, observed_state, action, status, details, started_at, finished_at)
 	//  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 	InsertReconcileRun(ctx context.Context, arg InsertReconcileRunParams) error
-	//InsertServiceGrant
+	//InsertServiceGrantSource
 	//
-	//  INSERT INTO service_grants (subject_sub, service_id, source_group, granted_at, last_synced_at)
+	//  INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
 	//  VALUES (?1, ?2, ?3, ?4, ?5)
-	InsertServiceGrant(ctx context.Context, arg InsertServiceGrantParams) error
+	//  ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+	//      last_synced_at = excluded.last_synced_at,
+	//      updated_at = CURRENT_TIMESTAMP
+	InsertServiceGrantSource(ctx context.Context, arg InsertServiceGrantSourceParams) error
 	//InsertTenantInstance
 	//
 	//  INSERT INTO tenant_instances (tenant_id, subject_sub, service_id, subject_key, tenant_instance_name, internal_dns_name, desired_state, runtime_state)
@@ -246,12 +345,20 @@ type Querier interface {
 	//      adapter_requirement,
 	//      secret_contract,
 	//      enabled,
+	//      source,
 	//      created_at,
 	//      updated_at
 	//  FROM service_catalog
 	//  WHERE enabled = 1
 	//  ORDER BY service_id
 	ListEnabledServiceCatalog(ctx context.Context) ([]ListEnabledServiceCatalogRow, error)
+	//ListEnabledServiceIDs
+	//
+	//  SELECT service_id
+	//  FROM service_catalog
+	//  WHERE enabled = 1
+	//  ORDER BY service_id
+	ListEnabledServiceIDs(ctx context.Context) ([]string, error)
 	//ListServiceCatalog
 	//
 	//  SELECT service_id,
@@ -268,11 +375,25 @@ type Querier interface {
 	//      adapter_requirement,
 	//      secret_contract,
 	//      enabled,
+	//      source,
 	//      created_at,
 	//      updated_at
 	//  FROM service_catalog
 	//  ORDER BY service_id
 	ListServiceCatalog(ctx context.Context) ([]ListServiceCatalogRow, error)
+	//ListSubjectServiceGrants
+	//
+	//  SELECT service_grants.subject_sub,
+	//         service_grants.service_id,
+	//         service_grants.source_group,
+	//         service_grants.granted_at,
+	//         service_grants.last_synced_at
+	//  FROM service_grants
+	//  JOIN service_catalog ON service_catalog.service_id = service_grants.service_id
+	//  WHERE service_grants.subject_sub = ?1
+	//    AND service_catalog.enabled = 1
+	//  ORDER BY service_grants.service_id
+	ListSubjectServiceGrants(ctx context.Context, arg ListSubjectServiceGrantsParams) ([]ListSubjectServiceGrantsRow, error)
 	//ListTenantInstances
 	//
 	//  SELECT tenant_id,
@@ -323,6 +444,10 @@ type Querier interface {
 	//  VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(state) DO UPDATE SET return_to = excluded.return_to, nonce = excluded.nonce, expires_at = excluded.expires_at, updated_at = CURRENT_TIMESTAMP
 	PutPendingLogin(ctx context.Context, arg PutPendingLoginParams) error
+	//RebuildEffectiveServiceGrants
+	//
+	//  DELETE FROM service_grants
+	RebuildEffectiveServiceGrants(ctx context.Context) error
 	//ReleaseControlPlaneLease
 	//
 	//  DELETE FROM control_plane_leases
@@ -341,6 +466,14 @@ type Querier interface {
 	//      updated_at = CURRENT_TIMESTAMP
 	//  WHERE tenant_id = ?8
 	UpdateTenantRuntimeStatus(ctx context.Context, arg UpdateTenantRuntimeStatusParams) error
+	//UpsertManualServiceGrantSource
+	//
+	//  INSERT INTO service_grant_sources (subject_sub, service_id, source_group, granted_at, last_synced_at)
+	//  VALUES (?1, ?2, 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	//  ON CONFLICT(subject_sub, service_id, source_group) DO UPDATE SET
+	//      last_synced_at = CURRENT_TIMESTAMP,
+	//      updated_at = CURRENT_TIMESTAMP
+	UpsertManualServiceGrantSource(ctx context.Context, arg UpsertManualServiceGrantSourceParams) error
 	//UpsertOAuthSession
 	//
 	//  INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
@@ -425,6 +558,50 @@ type Querier interface {
 	//      source = excluded.source,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error
+	//UpsertStaticTenantUpstream
+	//
+	//  INSERT INTO tenant_instances (
+	//      tenant_id,
+	//      subject_sub,
+	//      service_id,
+	//      subject_key,
+	//      tenant_instance_name,
+	//      internal_dns_name,
+	//      desired_state,
+	//      runtime_state,
+	//      upstream_url,
+	//      last_healthy_at,
+	//      last_error,
+	//      metadata
+	//  )
+	//  VALUES (
+	//      ?1,
+	//      ?2,
+	//      ?3,
+	//      ?4,
+	//      ?5,
+	//      ?6,
+	//      'enabled',
+	//      'ready',
+	//      ?7,
+	//      ?8,
+	//      NULL,
+	//      json_object('runtime_mode', 'static_upstream')
+	//  )
+	//  ON CONFLICT(subject_sub, service_id) DO UPDATE SET
+	//      subject_key = excluded.subject_key,
+	//      tenant_instance_name = excluded.tenant_instance_name,
+	//      internal_dns_name = excluded.internal_dns_name,
+	//      desired_state = 'enabled',
+	//      runtime_state = 'ready',
+	//      coolify_resource_id = NULL,
+	//      coolify_application_id = NULL,
+	//      upstream_url = excluded.upstream_url,
+	//      last_healthy_at = excluded.last_healthy_at,
+	//      last_error = NULL,
+	//      metadata = json_patch(tenant_instances.metadata, excluded.metadata),
+	//      updated_at = CURRENT_TIMESTAMP
+	UpsertStaticTenantUpstream(ctx context.Context, arg UpsertStaticTenantUpstreamParams) error
 	//UpsertSubject
 	//
 	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
@@ -437,6 +614,17 @@ type Querier interface {
 	//      last_synced_at = CURRENT_TIMESTAMP,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertSubject(ctx context.Context, arg UpsertSubjectParams) error
+	//UpsertSubjectPreservingMetadata
+	//
+	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
+	//  VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	//  ON CONFLICT(subject_sub) DO UPDATE SET
+	//      subject_key = subjects.subject_key,
+	//      preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
+	//      email = COALESCE(excluded.email, subjects.email),
+	//      display_name = COALESCE(excluded.display_name, subjects.display_name),
+	//      updated_at = CURRENT_TIMESTAMP
+	UpsertSubjectPreservingMetadata(ctx context.Context, arg UpsertSubjectPreservingMetadataParams) error
 }
 
 var _ Querier = (*Queries)(nil)
