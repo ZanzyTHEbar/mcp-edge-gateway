@@ -2,6 +2,7 @@ package edge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,104 @@ func TestServerHandlerUsesRefreshedCatalogWithoutRebuild(t *testing.T) {
 	res = httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	require.Equal(t, http.StatusNotFound, res.Code)
+}
+
+func TestRootDiscoveryReturnsCatalogAndMetadataLinks(t *testing.T) {
+	t.Parallel()
+
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "mcp-edge", payload["name"])
+	require.Equal(t, "https://mcp.example.com", payload["public_base_url"])
+	require.Equal(t, "ok", payload["catalog_status"])
+
+	services, ok := payload["services"].([]any)
+	require.True(t, ok)
+	require.Len(t, services, 3)
+	require.Contains(t, res.Body.String(), `"id":"mealie"`)
+	require.Contains(t, res.Body.String(), `"path":"/mealie/mcp"`)
+	require.Contains(t, res.Body.String(), `"scope":"mcp:mealie"`)
+
+	oauth, ok := payload["oauth"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "https://mcp.example.com/.well-known/oauth-authorization-server", oauth["authorization_server_metadata"])
+	require.Equal(t, "https://mcp.example.com/oauth/register", oauth["registration_endpoint"])
+}
+
+func TestRootDiscoveryDoesNotExposeCatalogRefreshErrors(t *testing.T) {
+	t.Parallel()
+
+	store := newMutableCatalogStore(t)
+	server, err := NewServerWithStateStore(context.Background(), testEdgeConfig(), zerolog.Nop(), staticResolver{}, store)
+	require.NoError(t, err)
+
+	store.err = errors.New("sqlite failed at /data/private/mcp-platform.db")
+	require.Error(t, server.catalogCache.Refresh(context.Background()))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"catalog_status":"degraded"`)
+	require.NotContains(t, res.Body.String(), "sqlite failed")
+	require.NotContains(t, res.Body.String(), "/data/private")
+}
+
+func TestRootDiscoverySupportsHEAD(t *testing.T) {
+	t.Parallel()
+
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodHead, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Equal(t, "application/json", res.Header().Get("Content-Type"))
+}
+
+func TestRootDiscoveryTrimsPublicBaseURL(t *testing.T) {
+	t.Parallel()
+
+	cfg := testEdgeConfig()
+	cfg.PublicBaseURL = "https://mcp.example.com/"
+	server, err := NewServer(cfg, zerolog.Nop(), staticResolver{})
+	require.NoError(t, err)
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"registration_endpoint":"https://mcp.example.com/oauth/register"`)
+	require.NotContains(t, res.Body.String(), "https://mcp.example.com//")
+}
+
+func TestRootDiscoveryRejectsUnsupportedMethod(t *testing.T) {
+	t.Parallel()
+
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusMethodNotAllowed, res.Code)
+	require.Equal(t, "GET, HEAD", res.Header().Get("Allow"))
+	require.Contains(t, res.Body.String(), "method_not_allowed")
 }
 
 func TestOAuthScopesReflectRefreshedCatalog(t *testing.T) {

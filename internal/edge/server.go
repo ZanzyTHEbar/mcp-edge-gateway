@@ -91,7 +91,7 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 
 	return &Server{
 		logger:                    logger,
-		publicURL:                 cfg.PublicBaseURL,
+		publicURL:                 strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 		resolver:                  resolver,
 		catalogCache:              catalogCache,
 		fixtureInsecureSkipVerify: cfg.FixtureInsecureSkipVerify,
@@ -180,12 +180,66 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServiceRequest(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		s.handleRootDiscovery(w, r)
+		return
+	}
+
 	service, ok := s.catalogCache.MatchPublicPath(r.URL.Path)
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
 		return
 	}
 	s.handleServiceRoute(service)(w, r)
+}
+
+func (s *Server) handleRootDiscovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "root discovery supports GET and HEAD")
+		return
+	}
+
+	services := make([]map[string]any, 0)
+	if snapshot := s.catalogCache.Current(); snapshot != nil {
+		services = make([]map[string]any, 0, len(snapshot.entries))
+		for _, service := range snapshot.entries {
+			services = append(services, map[string]any{
+				"id":           service.ServiceID,
+				"display_name": service.DisplayName,
+				"path":         service.PublicPath,
+				"scope":        "mcp:" + service.ServiceID,
+				"transport":    service.TransportType,
+			})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":              "mcp-edge",
+		"public_base_url":   s.publicURL,
+		"services":          services,
+		"catalog_loaded_at": s.catalogCache.LoadedAt(),
+		"catalog_status":    catalogStatus(s.catalogCache.LastError()),
+		"oauth": map[string]string{
+			"authorization_server_metadata": s.publicURL + "/.well-known/oauth-authorization-server",
+			"protected_resource_metadata":   s.publicURL + "/.well-known/oauth-protected-resource",
+			"registration_endpoint":         s.publicURL + "/oauth/register",
+			"authorization_endpoint":        s.publicURL + "/oauth/authorize",
+			"token_endpoint":                s.publicURL + "/oauth/token",
+			"introspection_endpoint":        s.publicURL + "/oauth/introspect",
+		},
+		"health": map[string]string{
+			"live":  s.publicURL + "/health/live",
+			"ready": s.publicURL + "/health/ready",
+		},
+	})
+}
+
+func catalogStatus(lastError string) string {
+	if strings.TrimSpace(lastError) == "" {
+		return "ok"
+	}
+	return "degraded"
 }
 
 func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.HandlerFunc {

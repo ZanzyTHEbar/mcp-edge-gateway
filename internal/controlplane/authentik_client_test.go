@@ -116,6 +116,28 @@ func TestAuthentikClientBuildGrantSnapshot(t *testing.T) {
 	require.Equal(t, 1, tokenCalls)
 }
 
+func TestSubjectSubFromAuthentikUserUsesOIDCSubjectPreference(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "oidc-subject", SubjectSubFromAuthentikUser(AuthentikUser{
+		PK:  "42",
+		UID: "authentik-uid",
+		Attributes: map[string]any{
+			"sub": " oidc-subject ",
+		},
+	}))
+	require.Equal(t, "authentik-uid", SubjectSubFromAuthentikUser(AuthentikUser{
+		PK:         "42",
+		UID:        " authentik-uid ",
+		Attributes: map[string]any{},
+	}))
+	require.Equal(t, "authentik|42", SubjectSubFromAuthentikUser(AuthentikUser{
+		PK:         "42",
+		Attributes: map[string]any{},
+	}))
+	require.Empty(t, SubjectSubFromAuthentikUser(AuthentikUser{Attributes: map[string]any{}}))
+}
+
 func TestAuthentikClientBuildGrantSnapshotSkipsMalformedRecordsAndUnknownMappings(t *testing.T) {
 	t.Parallel()
 

@@ -72,6 +72,14 @@ The `deploy/coolify/` directory contains compose templates for:
 
 The root `docker-compose.yaml` is a convenience entrypoint for the combined stack.
 
+## MCP operation
+
+See `docs/mcp-registration-client-rbac.md` for the current operator and client contract:
+
+- how MCP services are registered in the builtin catalog,
+- how clients discover, register, authorize, and call MCP service URLs,
+- how Authentik groups map to service grants and edge scopes.
+
 ## Development
 
 Run the standard validation loop before committing changes:
