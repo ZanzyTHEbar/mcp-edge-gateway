@@ -45,24 +45,17 @@ At minimum, configure:
 - identity-provider issuer and client IDs,
 - secret-store connection details,
 - infrastructure API endpoint and project identifiers,
-- tenant runtime image mode and image tags,
-- file paths for any secrets mounted into containers.
+- tenant runtime image mode and image tags.
 
 ## Secret files
 
-The compose templates mount runtime secrets from a configurable host directory:
+The Coolify templates mount runtime secrets from `/data/coolify/mcp-platform-secrets`, which is visible to Coolify's deployment build container on standard installations. The root `docker-compose.yaml` remains configurable with `MCP_SECRETS_DIR` for non-Coolify deployments.
 
-```sh
-MCP_SECRETS_DIR=/path/to/mcp-secrets
-```
-
-If unset, the Coolify templates use `/data/coolify/mcp-platform-secrets`, which is visible to Coolify's deployment build container on standard installations. Override `MCP_SECRETS_DIR` if your deployment platform exposes a different host path during compose rendering.
-
-The templates also pass `MCP_SECRETS_DIR`, `MCP_PLATFORM_DATA_VOLUME`, and `MCP_DOCKER_NETWORK` into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used in `volumes:` or `networks:`.
+The templates pass `MCP_PLATFORM_DATA_VOLUME` and `MCP_DOCKER_NETWORK` into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used elsewhere.
 
 Expected files:
 
-When `MCP_SECRETS_DIR` is not overridden, place these files under `/data/coolify/mcp-platform-secrets` on the Coolify host.
+Place these files under `/data/coolify/mcp-platform-secrets` on the Coolify host.
 
 - `mcp-control-plane-infisical-machine-client-secret`
 - `mcp-edge-authentik-client-secret`

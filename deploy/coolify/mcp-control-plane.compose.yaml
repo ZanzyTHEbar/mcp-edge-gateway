@@ -80,7 +80,7 @@ services:
     volumes:
       - mcp-platform-data:/data/mcp-platform
       - type: bind
-        source: ${MCP_SECRETS_DIR:-/data/coolify/mcp-platform-secrets}/mcp-control-plane-infisical-machine-client-secret
+        source: /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret
         target: /run/secrets/mcp-control-plane-infisical-machine-client-secret
         read_only: true
     expose:
