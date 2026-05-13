@@ -89,7 +89,7 @@ func TestMemoryEdgeStateStoreRoundTrip(t *testing.T) {
 
 	client := registeredClient{
 		ID:                      "client-1",
-		Name:                    "Open WebUI",
+		Name:                    "Example Client",
 		RedirectURIs:            []string{"https://example.com/callback"},
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},

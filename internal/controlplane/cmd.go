@@ -19,7 +19,7 @@ import (
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp-control-plane",
-		Short: "Run the DragonServer MCP control plane",
+		Short: "Run the MCP control plane",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := LoadConfig()
 			if err != nil {

@@ -29,9 +29,9 @@ services:
       MCP_EDGE_COOKIE_SECURE: ${MCP_EDGE_COOKIE_SECURE:-true}
     volumes:
       - mcp-platform-data:/data/mcp-platform
-      - /data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
-      - /data/coolify/mcp-platform-secrets/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
-      - /data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
+      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-authentik-client-secret:/run/secrets/mcp-edge-authentik-client-secret:ro
+      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-operator-token:/run/secrets/mcp-edge-operator-token:ro
+      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-edge-session-encryption-key:/run/secrets/mcp-edge-session-encryption-key:ro
     expose:
       - "8080"
     healthcheck:
@@ -48,8 +48,9 @@ services:
 
 networks:
   coolify:
+    name: ${MCP_DOCKER_NETWORK:-coolify}
     external: true
 
 volumes:
   mcp-platform-data:
-    name: mcp-platform-data
+    name: ${MCP_PLATFORM_DATA_VOLUME:-mcp-platform-data}

@@ -18,7 +18,7 @@ import (
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp-edge",
-		Short: "Run the DragonServer MCP shared edge",
+		Short: "Run the MCP shared edge",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := LoadConfig()
 			if err := cfg.Validate(); err != nil {

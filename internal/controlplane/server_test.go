@@ -160,7 +160,7 @@ func TestHandleReadinessReportsConfigErrors(t *testing.T) {
 				CoolifyAPIBaseURL:                "https://coolify.example.com/api/v1",
 				CoolifyAPITokenPath:              "/run/secrets/coolify-api-token",
 				InfisicalAPIBaseURL:              "https://infisical.example.com/api",
-				InfisicalProjectSlug:             "dragonserver",
+				InfisicalProjectSlug:             "example-project",
 				InfisicalEnvSlug:                 "prod",
 				InfisicalMachineClientID:         "machine-id",
 				InfisicalMachineClientSecretPath: "/run/secrets/infisical-machine-secret",

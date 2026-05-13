@@ -1,156 +1,119 @@
-# Coolify Deployment Artifacts
+# Coolify Deployment Templates
 
-This directory contains the deployment artifacts for the MCP platform core services:
+This directory contains reusable Docker Compose templates for deploying the MCP Edge Gateway runtime on a Coolify-style Docker host.
 
-- `mcp-control-plane`
-- `mcp-edge`
+The templates are intentionally generic. Configure hostnames, secrets, image names, project identifiers, and deployment policies through environment variables.
 
 ## Files
 
-- `../../docker-compose.yaml`
-  - root convenience entrypoint for public-repo Coolify imports; mirrors the combined core stack
-- `mcp-platform-core.compose.yaml`
-  - preferred import path for a single Coolify-managed core stack
-- `mcp-control-plane.compose.yaml`
-  - control-plane-only deployment definition
-- `mcp-edge.compose.yaml`
-  - edge-only deployment definition
-- `mcp-platform-core.image.compose.yaml`
-  - registry-image variant of the combined core stack
-- `mcp-control-plane.image.compose.yaml`
-  - registry-image variant of the control-plane service
-- `mcp-edge.image.compose.yaml`
-  - registry-image variant of the edge service
-## Recommended Import Mode
+- `../../docker-compose.yaml` — root convenience entrypoint for the combined core stack.
+- `mcp-platform-core.compose.yaml` — combined source-build stack.
+- `mcp-control-plane.compose.yaml` — control-plane-only source-build service.
+- `mcp-edge.compose.yaml` — edge-only source-build service.
+- `mcp-platform-core.image.compose.yaml` — combined prebuilt-image stack.
+- `mcp-control-plane.image.compose.yaml` — control-plane-only prebuilt-image service.
+- `mcp-edge.image.compose.yaml` — edge-only prebuilt-image service.
 
-When importing the standalone public runtime repo (`ZanzyTHEbar/dragonserver-mcp-platform-runtime`) into Coolify, prefer the repository-root `docker-compose.yaml`.
+## Source modes
 
-In this parent repository checkout, the equivalent repo-relative file lives at `mcp-platform/docker-compose.yaml`.
+### Source-build mode
 
-Use `deploy/coolify/mcp-platform-core.compose.yaml` when you want the explicit deployment artifact path instead of the root convenience file.
+Use the `*.compose.yaml` files when the deployment platform can build from this repository.
 
-In this parent repository checkout, the equivalent repo-relative explicit artifact path is `mcp-platform/deploy/coolify/mcp-platform-core.compose.yaml`.
+The root compose file uses `build.context: .`. The compose files inside this directory use `build.context: ../..` so they can still reach the root Dockerfiles and Go source tree.
 
-That keeps the SQLite/libSQL-backed control plane and edge in one discoverable core stack while still allowing the control plane to create per-tenant Coolify services dynamically.
+### Prebuilt-image mode
 
-Use the per-service compose files only if you intentionally want separate Coolify applications for the core services.
+Use the `*.image.compose.yaml` files when images are built elsewhere and pulled by the deployment platform.
 
-## Source Modes
+In this mode, set:
 
-Two deployment source modes are supported:
+- `MCP_INFISICAL_BRIDGE_IMAGE`
+- `MCP_CONTROL_PLANE_IMAGE`
+- `MCP_EDGE_IMAGE`
 
-### 1. Repo-backed build mode
+## Required configuration
 
-Use:
+Use these files as templates:
 
-- `mcp-platform-core.compose.yaml`
-- `mcp-control-plane.compose.yaml`
-- `mcp-edge.compose.yaml`
-
-This mode requires Coolify to have repository access so it can build from the repo-relative Dockerfile contexts.
-
-In the standalone public runtime repo, the root `docker-compose.yaml` lives at the repository root and therefore uses `context: .`.
-
-The compose artifacts inside `deploy/coolify/` live two directories below the runtime repo root and therefore use `build.context: ../..` so the root Dockerfiles and Go source tree remain addressable in repo-backed builds.
-
-### 2. Registry-image mode
-
-Use:
-
-- `mcp-platform-core.image.compose.yaml`
-- `mcp-control-plane.image.compose.yaml`
-- `mcp-edge.image.compose.yaml`
-
-This mode requires prebuilt images in a registry reachable by Coolify.
-
-When using the registry-image manifests, you must also provide:
-
-- `MCP_INFISICAL_BRIDGE_IMAGE` for the bundled Infisical bridge sidecar
-- `MCP_CONTROL_PLANE_IMAGE` for the control-plane runtime image
-- `MCP_EDGE_IMAGE` for the edge runtime image
-- `MCP_INFISICAL_BRIDGE_UPSTREAM_HOST` for the environment-specific Infisical hostname routed by the shared proxy
-
-If the runtime source is not currently available to Coolify as a git repository, registry-image mode is the correct deployment path.
-
-Keep environment-specific rollout procedures, live hostnames, and operational identifiers in a private operations repository instead of this public runtime source tree.
-
-## Runtime Assumptions
-
-- the shared external Docker network is named `coolify`
-- `mcp-control-plane` is attached to that network so tenant DNS names resolve during health probes
-- the control-plane deployment artifacts include an internal `infisical-bridge` sidecar that proxies to Infisical through `coolify-proxy` using Docker DNS
-- the recommended `MCP_CONTROL_PLANE_INFISICAL_API_BASE_URL` value is `http://infisical-bridge:8080`
-- `MCP_INFISICAL_BRIDGE_UPSTREAM_HOST` must point at the environment-specific public Infisical hostname that Traefik routes on the shared proxy
-- `mcp-control-plane` is internal-only and must not receive a public domain
-- `mcp-edge` is the only core service that should receive the public MCP domain
-- goose SQLite/libSQL schema migrations are applied by `mcp-control-plane` on startup
-- run exactly one `mcp-control-plane` instance at a time; the DB lease cancels a process after leadership loss, but operators must not intentionally configure multiple replicas or run old and new control-plane deployments concurrently
-- migration version `000002` is intentionally unused in this public runtime line so deployments that recorded an earlier pre-release version 2 do not skip the lease migration at `000003`
-
-## Required Coolify Configuration
-
-Use these files as the operator source templates for environment values:
-
-- `../../edge.env.example`
 - `../../control-plane.env.example`
+- `../../edge.env.example`
 
-### Required Secret Paths
+At minimum, configure:
 
-These DragonServer deployment artifacts do hard-code the expected host bind mounts for file-backed secrets.
+- the public edge base URL,
+- identity-provider issuer and client IDs,
+- secret-store connection details,
+- infrastructure API endpoint and project identifiers,
+- tenant runtime image mode and image tags,
+- file paths for any secrets mounted into containers.
 
-That is intentional for the current DragonServer rollout: the target resource server materializes the required secret files under `/data/coolify/mcp-platform-secrets`, and the compose artifacts mount those files into the runtime containers at the corresponding `/run/secrets/...` paths.
+## Secret files
 
-These DragonServer deployment artifacts expect the materialized secret files to exist under `/data/coolify/mcp-platform-secrets` on the target resource server before the first real deploy.
+The compose templates mount runtime secrets from a configurable host directory:
 
-`mcp-control-plane`
+```sh
+MCP_SECRETS_DIR=/path/to/mcp-secrets
+```
 
-- `/data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret`
+If unset, the templates use `/data/mcp-platform-secrets`.
 
-`mcp-edge`
+Expected files:
 
-- `/data/coolify/mcp-platform-secrets/mcp-edge-authentik-client-secret`
-- `/data/coolify/mcp-platform-secrets/mcp-edge-operator-token`
-- `/data/coolify/mcp-platform-secrets/mcp-edge-session-encryption-key`
+- `mcp-control-plane-infisical-machine-client-secret`
+- `mcp-edge-authentik-client-secret`
+- `mcp-edge-operator-token`
+- `mcp-edge-session-encryption-key`
 
-## Secret Source of Truth
+Secret values must be supplied by your deployment process. Do not commit secret values or environment-specific secret paths to this repository.
 
-Infisical remains the canonical secret store.
+## Database volume
 
-The control plane can resolve Infisical path references directly for its platform-scoped secrets.
-
-`mcp-edge` currently expects file-backed secrets, so those edge secrets must be materialized into Coolify-managed file mounts from the canonical Infisical values before rollout.
-
-## Database URL Note
-
-`MCP_PLATFORM_DATABASE_URL` is a SQLite/libSQL DSN shared by `mcp-edge` and `mcp-control-plane`.
-
-The default compose value is:
+`MCP_PLATFORM_DATABASE_URL` defaults to:
 
 ```text
 file:/data/mcp-platform/mcp-platform.db
 ```
 
-Both core services mount the same `mcp-platform-data` volume at `/data/mcp-platform`.
+Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-platform`.
 
-When the core services are imported as separate Coolify applications, this shared storage depends on the globally named Docker volume `mcp-platform-data`; do not allow Coolify to auto-generate per-application volume names.
+Set `MCP_PLATFORM_DATA_VOLUME` if your environment uses a different persistent volume name. If you deploy the control plane and edge as separate applications, ensure both applications mount the same persistent volume. Do not rely on deployment-platform-generated per-application volume names unless you have verified they resolve to the same storage.
 
-## Deployment Order
+Set `MCP_DOCKER_NETWORK` if your external Docker network is not named `coolify`.
 
-For separate service imports, first ensure the `mcp-platform-data` volume exists and is mounted, then deploy in this order:
+## Tenant image mode
 
-1. `mcp-control-plane`
-2. `mcp-edge`
+`MCP_CONTROL_PLANE_TENANT_IMAGE_MODE` controls validation for tenant runtime images:
 
-For the combined core stack, the compose file already models the edge dependency on a healthy control plane.
+- `local` — image tags must already exist on the Docker host.
+- `pinned` — image references must use immutable `@sha256:<64 hex>` digests.
 
-## Post-Deploy Validation
+Use `local` for host-local builds. Use `pinned` when images are published to a registry and you want digest enforcement.
 
-After Coolify reports the services healthy enough to stay running:
+For registry-backed production deployments, prefer `pinned`.
 
-1. verify `infisical-bridge` is healthy and reachable from `mcp-control-plane`
-2. verify `mcp-control-plane` returns `200` on `/health/live`
-3. verify `mcp-control-plane` exposes expected readiness state on `/health/ready`
-4. verify the SQLite database file exists under `/data/mcp-platform`
-5. verify `mcp-edge` returns `200` on `/health/live`
-6. verify `mcp-edge` publishes OAuth metadata and protected-resource metadata from the public domain
-7. verify no public domain is assigned to `mcp-control-plane`
+## Deployment order
+
+For separate applications:
+
+1. create or attach the shared database volume,
+2. deploy `mcp-control-plane`,
+3. verify migrations and readiness,
+4. deploy `mcp-edge`,
+5. verify public metadata and protected routing.
+
+For the combined stack, the compose file models the edge dependency on a healthy control plane.
+
+## Post-deploy checks
+
+After the deployment platform reports healthy containers:
+
+1. `mcp-control-plane` responds on `/health/live`.
+2. `mcp-control-plane` reports readiness on `/health/ready`.
+3. The SQLite database file exists under `/data/mcp-platform`.
+4. `mcp-edge` responds on `/health/live`.
+5. `mcp-edge` publishes OAuth authorization-server metadata.
+6. `mcp-edge` publishes OAuth protected-resource metadata.
+7. Only the edge service is publicly exposed.
+
+Keep live rollout procedures and environment identifiers in a private operations repository.

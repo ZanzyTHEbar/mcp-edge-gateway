@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	defaultTenantImageActualBudget = "ghcr.io/zanzythebar/actual-mcp-server:latest"
-	defaultTenantImageMemory       = "ghcr.io/zanzythebar/mcp-memory-libsql-go:latest"
-	defaultTenantImageMealie       = "ghcr.io/zanzythebar/mealie-mcp:latest"
+	defaultTenantImageActualBudget = "actual-mcp-server:latest"
+	defaultTenantImageMemory       = "mcp-memory-libsql-go:latest"
+	defaultTenantImageMealie       = "mealie-mcp:latest"
 	deleteRequeueInterval          = 2 * time.Minute
 )
 
@@ -658,7 +658,7 @@ func buildCreateServiceRequest(cfg Config, tenant TenantInstance, compose string
 	return CoolifyCreateServiceRequest{
 		Type:             "docker-compose",
 		Name:             tenant.TenantInstanceName,
-		Description:      "DragonServer MCP tenant " + tenant.ServiceID + " for " + tenant.SubjectKey,
+		Description:      "MCP tenant " + tenant.ServiceID + " for " + tenant.SubjectKey,
 		ProjectUUID:      cfg.CoolifyProjectUUID,
 		EnvironmentName:  cfg.CoolifyEnvironmentName,
 		EnvironmentUUID:  cfg.CoolifyEnvironmentUUID,
@@ -672,7 +672,7 @@ func buildCreateServiceRequest(cfg Config, tenant TenantInstance, compose string
 func buildUpdateServiceRequest(cfg Config, tenant TenantInstance, compose string) CoolifyUpdateServiceRequest {
 	return CoolifyUpdateServiceRequest{
 		Name:             tenant.TenantInstanceName,
-		Description:      "DragonServer MCP tenant " + tenant.ServiceID + " for " + tenant.SubjectKey,
+		Description:      "MCP tenant " + tenant.ServiceID + " for " + tenant.SubjectKey,
 		ProjectUUID:      cfg.CoolifyProjectUUID,
 		EnvironmentName:  cfg.CoolifyEnvironmentName,
 		EnvironmentUUID:  cfg.CoolifyEnvironmentUUID,

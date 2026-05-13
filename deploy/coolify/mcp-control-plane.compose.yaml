@@ -73,9 +73,10 @@ services:
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET: ${MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET:-}
       MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY:-}
+      MCP_CONTROL_PLANE_TENANT_IMAGE_MODE: ${MCP_CONTROL_PLANE_TENANT_IMAGE_MODE:-local}
     volumes:
       - mcp-platform-data:/data/mcp-platform
-      - /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
+      - ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-control-plane-infisical-machine-client-secret:/run/secrets/mcp-control-plane-infisical-machine-client-secret:ro
     expose:
       - "8081"
     healthcheck:
@@ -95,8 +96,9 @@ services:
 
 networks:
   coolify:
+    name: ${MCP_DOCKER_NETWORK:-coolify}
     external: true
 
 volumes:
   mcp-platform-data:
-    name: mcp-platform-data
+    name: ${MCP_PLATFORM_DATA_VOLUME:-mcp-platform-data}

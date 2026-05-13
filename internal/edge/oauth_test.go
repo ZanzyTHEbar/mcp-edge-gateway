@@ -79,8 +79,8 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	handler := server.Handler()
 
 	registrationBody := `{
-		"client_name":"open-webui",
-		"redirect_uris":["https://openwebui.example.com/oauth/callback"],
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback"],
 		"grant_types":["authorization_code","refresh_token"],
 		"response_types":["code"],
 		"token_endpoint_auth_method":"none",
@@ -138,7 +138,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 
 	location, err := url.Parse(res.Header().Get("Location"))
 	require.NoError(t, err)
-	require.Equal(t, "https://openwebui.example.com/oauth/callback", location.Scheme+"://"+location.Host+location.Path)
+	require.Equal(t, "https://client.example.com/oauth/callback", location.Scheme+"://"+location.Host+location.Path)
 
 	authCode := location.Query().Get("code")
 	require.NotEmpty(t, authCode)
@@ -299,8 +299,8 @@ func TestOAuthAuthorizeRejectsScopeOutsideClientRegistration(t *testing.T) {
 	handler := server.Handler()
 
 	registrationBody := `{
-		"client_name":"open-webui",
-		"redirect_uris":["https://openwebui.example.com/oauth/callback"],
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback"],
 		"grant_types":["authorization_code","refresh_token"],
 		"response_types":["code"],
 		"token_endpoint_auth_method":"none",
@@ -423,8 +423,8 @@ func TestOAuthRegistrationRequiresOperatorBearerToken(t *testing.T) {
 	handler := server.Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{
-		"client_name":"open-webui",
-		"redirect_uris":["https://openwebui.example.com/oauth/callback"]
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback"]
 	}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()

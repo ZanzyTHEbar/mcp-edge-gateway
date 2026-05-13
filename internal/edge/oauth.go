@@ -193,7 +193,7 @@ func (o *OAuthService) handleProtectedResourceMetadata(w http.ResponseWriter, r 
 		"scopes_supported":                      o.catalog.Scopes(),
 		"bearer_methods_supported":              []string{"header"},
 		"resource_documentation":                o.publicBaseURL + "/health",
-		"resource_name":                         "dragonserver-mcp-edge",
+		"resource_name":                         "mcp-edge",
 		"authorization_details_types_supported": []string{},
 	})
 }

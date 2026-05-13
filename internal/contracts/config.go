@@ -42,4 +42,5 @@ const (
 	EnvControlPlaneTenantImageMealie                = "MCP_CONTROL_PLANE_TENANT_IMAGE_MEALIE"
 	EnvControlPlaneTenantImageActualBudget          = "MCP_CONTROL_PLANE_TENANT_IMAGE_ACTUALBUDGET"
 	EnvControlPlaneTenantImageMemory                = "MCP_CONTROL_PLANE_TENANT_IMAGE_MEMORY"
+	EnvControlPlaneTenantImageMode                  = "MCP_CONTROL_PLANE_TENANT_IMAGE_MODE"
 )

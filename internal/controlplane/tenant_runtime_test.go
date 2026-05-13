@@ -28,8 +28,8 @@ func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {
 	service := catalog.DefaultCatalogV1()[2]
 	tenant := TenantInstance{
 		ServiceID:          service.ServiceID,
-		SubjectKey:         "wizard",
-		TenantInstanceName: "memory-wizard",
+		SubjectKey:         "subject-a",
+		TenantInstanceName: "memory-subject-a",
 	}
 
 	rendered, err := renderMemoryTenant(Config{}, tenant, service, map[string]string{
@@ -52,31 +52,31 @@ func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {
 	require.Equal(t, "secret-token", envs["LIBSQL_AUTH_TOKEN"])
 }
 
-func TestRenderMealieTenantUsesRegistryBackedDefaultImage(t *testing.T) {
+func TestRenderMealieTenantUsesLocalDefaultImage(t *testing.T) {
 	t.Parallel()
 
 	service := catalog.DefaultCatalogV1()[0]
 	tenant := TenantInstance{
 		ServiceID:          service.ServiceID,
-		SubjectKey:         "wizard",
-		TenantInstanceName: "mealie-wizard",
+		SubjectKey:         "subject-a",
+		TenantInstanceName: "mealie-subject-a",
 	}
 
 	rendered, err := renderMealieTenant(Config{MealieBaseURL: "https://mealie.example.com"}, tenant, service, map[string]string{
 		"api-token": "token-value",
 	})
 	require.NoError(t, err)
-	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "image: ghcr.io/zanzythebar/mealie-mcp:latest")
+	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "image: mealie-mcp:latest")
 }
 
-func TestRenderActualBudgetTenantUsesRegistryBackedDefaultImage(t *testing.T) {
+func TestRenderActualBudgetTenantUsesLocalDefaultImage(t *testing.T) {
 	t.Parallel()
 
 	service := catalog.DefaultCatalogV1()[1]
 	tenant := TenantInstance{
 		ServiceID:          service.ServiceID,
-		SubjectKey:         "wizard",
-		TenantInstanceName: "actualbudget-wizard",
+		SubjectKey:         "subject-a",
+		TenantInstanceName: "actualbudget-subject-a",
 	}
 
 	rendered, err := renderActualBudgetTenant(Config{ActualServerURL: "https://budget.example.com"}, tenant, service, map[string]string{
@@ -84,5 +84,5 @@ func TestRenderActualBudgetTenantUsesRegistryBackedDefaultImage(t *testing.T) {
 		"budget-sync-id": "sync-id",
 	})
 	require.NoError(t, err)
-	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "image: ghcr.io/zanzythebar/actual-mcp-server:latest")
+	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "image: actual-mcp-server:latest")
 }

@@ -64,7 +64,7 @@ func TestSQLiteEdgeStateStoreRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, session, gotSession)
 
-	client := registeredClient{ID: "client-1", Name: "Open WebUI", RedirectURIs: []string{"https://example.com/callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, TokenEndpointAuthMethod: tokenEndpointAuthMethodClientBasic, Secret: "super-secret", Scopes: []string{"mcp:mealie"}}
+	client := registeredClient{ID: "client-1", Name: "Example Client", RedirectURIs: []string{"https://example.com/callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, TokenEndpointAuthMethod: tokenEndpointAuthMethodClientBasic, Secret: "super-secret", Scopes: []string{"mcp:mealie"}}
 	require.NoError(t, storeValue.CreateClient(ctx, client, claims.Sub))
 	clientInfo, err := storeValue.GetByID(ctx, client.ID)
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestSQLiteEdgeStateStoreRoundTrip(t *testing.T) {
 	_, err = storeValue.GetByRefresh(wrongClientCtx, "cross-client-refresh-token")
 	require.ErrorContains(t, err, "refresh token was not issued to this OAuth client")
 
-	revokedClient := registeredClient{ID: "client-2", Name: "Open WebUI", RedirectURIs: []string{"https://example.com/other-callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, TokenEndpointAuthMethod: tokenEndpointAuthMethodNone, Scopes: []string{"mcp:mealie"}}
+	revokedClient := registeredClient{ID: "client-2", Name: "Example Client 2", RedirectURIs: []string{"https://example.com/other-callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, TokenEndpointAuthMethod: tokenEndpointAuthMethodNone, Scopes: []string{"mcp:mealie"}}
 	require.NoError(t, storeValue.CreateClient(ctx, revokedClient, claims.Sub))
 	revokedToken := models.NewToken()
 	revokedToken.SetClientID(revokedClient.ID)

@@ -19,5 +19,4 @@
 !/deploy/**
 !/internal/
 !/internal/**
-!/mcp-control-plane/
-!/mcp-control-plane/**
+mcp-control-plane/

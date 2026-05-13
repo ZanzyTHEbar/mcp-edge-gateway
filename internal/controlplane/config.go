@@ -37,6 +37,7 @@ type Config struct {
 	TenantImageMealie                string
 	TenantImageActualBudget          string
 	TenantImageMemory                string
+	TenantImageMode                  string
 }
 
 func LoadConfig() (Config, error) {
@@ -46,6 +47,7 @@ func LoadConfig() (Config, error) {
 	viper.SetDefault(contracts.EnvControlPlaneHTTPBindAddr, ":8081")
 	viper.SetDefault(contracts.EnvControlPlaneReconcileInterval, "30s")
 	viper.SetDefault(contracts.EnvControlPlaneHealthcheckInterval, "30s")
+	viper.SetDefault(contracts.EnvControlPlaneTenantImageMode, "local")
 
 	reconcileInterval, err := parseDurationEnv(contracts.EnvControlPlaneReconcileInterval)
 	if err != nil {
@@ -84,6 +86,7 @@ func LoadConfig() (Config, error) {
 		TenantImageMealie:                strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneTenantImageMealie)),
 		TenantImageActualBudget:          strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneTenantImageActualBudget)),
 		TenantImageMemory:                strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneTenantImageMemory)),
+		TenantImageMode:                  strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneTenantImageMode)),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -186,7 +189,14 @@ func (c Config) validateTenantRuntimeConfig() error {
 	if c.ActualServerURL == "" {
 		return fmt.Errorf("%s is required when tenant runtime is enabled", contracts.EnvControlPlaneActualServerURL)
 	}
-	if strings.EqualFold(c.PlatformEnv, "production") {
+	imageMode := strings.ToLower(strings.TrimSpace(c.TenantImageMode))
+	if imageMode == "" {
+		imageMode = "local"
+	}
+	if imageMode != "local" && imageMode != "pinned" {
+		return fmt.Errorf("%s must be one of: local, pinned", contracts.EnvControlPlaneTenantImageMode)
+	}
+	if imageMode == "pinned" {
 		for _, image := range []struct {
 			envKey string
 			value  string
@@ -196,10 +206,10 @@ func (c Config) validateTenantRuntimeConfig() error {
 			{envKey: contracts.EnvControlPlaneTenantImageMemory, value: c.TenantImageMemory},
 		} {
 			if image.value == "" {
-				return fmt.Errorf("%s is required in production when tenant runtime is enabled", image.envKey)
+				return fmt.Errorf("%s is required when %s=pinned", image.envKey, contracts.EnvControlPlaneTenantImageMode)
 			}
 			if !hasImmutableImageDigest(image.value) {
-				return fmt.Errorf("%s must use an immutable digest in production", image.envKey)
+				return fmt.Errorf("%s must use an immutable digest when %s=pinned", image.envKey, contracts.EnvControlPlaneTenantImageMode)
 			}
 		}
 	}
@@ -209,8 +219,8 @@ func (c Config) validateTenantRuntimeConfig() error {
 
 func hasImmutableImageDigest(image string) bool {
 	image = strings.TrimSpace(image)
-	_, digest, ok := strings.Cut(image, "@sha256:")
-	if !ok || len(digest) != 64 {
+	repository, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || strings.TrimSpace(repository) == "" || len(digest) != 64 {
 		return false
 	}
 	for _, r := range digest {

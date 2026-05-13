@@ -1,29 +1,19 @@
-# MCP Platform Runtime
+# MCP Edge Gateway
 
-This repository contains the production Go runtime for a shared MCP edge and control plane deployment.
+MCP Edge Gateway is a Go runtime for operating a shared MCP edge and control plane. It provides authenticated public MCP entrypoints, tenant-aware routing, durable state, and a control plane that can reconcile tenant services through external infrastructure APIs.
 
-Product strategy, architecture decision records, and environment-specific operator runbooks are intentionally kept outside this public runtime repository.
+This repository is deployment-neutral. It does not include private rollout notes, live hostnames, organization-specific runbooks, incident history, or environment identifiers.
 
-## Current Runtime Surface
+## What it includes
 
-The module currently produces two binaries:
+- `mcp-edge`: the public HTTP edge for MCP clients.
+- `mcp-control-plane`: the internal control plane for catalog, tenant, secret, and runtime reconciliation.
+- SQLite/libSQL persistence with goose migrations and sqlc-generated data access.
+- OAuth metadata, registration, authorization, token, refresh, and introspection endpoints.
+- Subject-aware tenant routing and audit-event persistence.
+- Deployment templates for Docker Compose and Coolify-style environments.
 
-- `mcp-edge`
-- `mcp-control-plane`
-
-Implemented runtime capabilities now include:
-
-- shared MCP edge service paths for `mealie`, `actualbudget`, and `memory`
-- MCP-facing OAuth metadata, authorization, token, refresh, registration, and introspection flows
-- durable SQLite/libSQL edge persistence for OAuth clients, tokens, browser sessions, and pending logins
-- durable edge audit-event persistence for OAuth, browser-login, and protected service access decisions
-- DB-backed subject-aware tenant resolution at the edge
-- control-plane persistence, goose migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
-- transport/path normalization for the day-one service catalog:
-  - `/actualbudget/mcp` -> upstream `/http`
-  - `/memory/mcp` -> targeted SSE-to-streamable-HTTP request bridge for the upstream memory service
-
-## Repository Layout
+## Repository layout
 
 ```text
 .
@@ -51,29 +41,36 @@ Implemented runtime capabilities now include:
 └── README.md
 ```
 
-## Runtime Contracts
+## Configuration
 
-The most important public runtime contract sources are:
+Start from the example files:
 
-- `edge.env.example`
 - `control-plane.env.example`
-- `docker-compose.yaml`
-- `deploy/coolify/README.md`
-- `deploy/coolify/*.compose.yaml`
-- `deploy/coolify/*.image.compose.yaml`
+- `edge.env.example`
 
-Environment-specific rollout plans, live identifiers, and private service audits should live in a separate private operations repository.
+These examples use placeholders and safe defaults. Replace them with values for your own identity provider, secret store, infrastructure API, public edge URL, and tenant image strategy.
 
-## Validation
+Tenant images support two modes:
 
-The current validation loop for this module is:
+- `local`: image tags must already exist on the Docker host.
+- `pinned`: image references must use `@sha256:<64 hex>` digests.
 
-```sh
-go test -buildvcs=false ./...
-go build -buildvcs=false ./...
-```
+Keep environment-specific values outside this repository. That includes live hostnames, user identifiers, production UUIDs, access tokens, secret values, incident notes, and one-off migration plans.
 
-SQLite/libSQL is the default persistence layer. sqlc code must be regenerated when `db/queries` or `db/migrations` changes:
+## Deployment templates
+
+The `deploy/coolify/` directory contains compose templates for:
+
+- a combined core stack,
+- a control-plane-only service,
+- an edge-only service,
+- registry-image variants of those services.
+
+The root `docker-compose.yaml` is a convenience entrypoint for the combined stack.
+
+## Development
+
+Run the standard validation loop before committing changes:
 
 ```sh
 sqlc generate
@@ -81,26 +78,16 @@ go test -buildvcs=false ./...
 go build -buildvcs=false ./...
 ```
 
-## Batch 18 Status
+If you change SQL queries or migrations, regenerate sqlc output before running tests.
 
-Completed hardening in this module now includes:
+## Documentation policy
 
-- fail-closed edge auth mode outside explicit fixture mode
-- operator-gated sensitive OAuth endpoints
-- restart-safe multi-instance edge state handling
-- goose-managed SQLite/libSQL migrations
-- degraded-startup behavior when the initial reconcile fails
-- softer Authentik snapshot ingestion for malformed rows and unknown service-group mappings
-- improved reconcile summary accounting and better upstream HTTP error detail for Authentik, Infisical, and Coolify failures
+This repository should only contain reusable product and runtime documentation. Do not commit:
 
-Remaining rollout work is now packaging-oriented:
+- deployment-specific runbooks,
+- one-off plans,
+- private hostnames, domains, UUIDs, usernames, emails, or tokens,
+- customer- or operator-specific service names,
+- incident transcripts or one-off audit notes.
 
-- local artifact validation
-- deployment-readiness review against target dependencies
-- environment-specific rollout execution
-
-## Implementation Directive
-
-New runtime code in this module is written in Go.
-
-Existing TypeScript services such as `mealie-mcp` remain integration surfaces and reference implementations, not the implementation language for the new platform components.
+Keep those in a private operations system instead.
