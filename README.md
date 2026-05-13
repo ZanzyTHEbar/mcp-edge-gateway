@@ -13,21 +13,6 @@ This repository is deployment-neutral. It does not include private rollout notes
 - Subject-aware tenant routing and audit-event persistence.
 - Deployment templates for Docker Compose and Coolify-style environments.
 
-- `mcp-edge`
-- `mcp-control-plane`
-
-Implemented runtime capabilities now include:
-
-- shared MCP edge service paths for MCP Server
-- MCP-facing OAuth metadata, authorization, token, refresh, registration, and introspection flows
-- durable SQLite/libSQL edge persistence for OAuth clients, tokens, browser sessions, and pending logins
-- durable edge audit-event persistence for OAuth, browser-login, and protected service access decisions
-- DB-backed subject-aware tenant resolution at the edge
-- control-plane persistence, goose migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
-- transport/path normalization for the day-one service catalog:
-  - `mcp` -> upstream `/http`
-  - `mcp` -> targeted SSE-to-streamable-HTTP request bridge supported services
-
 ## Repository Layout
 
 ```text
@@ -72,6 +57,10 @@ Tenant images support two modes:
 
 Keep environment-specific values outside this repository. That includes live hostnames, user identifiers, production UUIDs, access tokens, secret values, incident notes, and one-off migration plans.
 
+## Documentation policy
+
+Keep this repository reusable. Do not commit deployment-specific runbooks, live hostnames, environment identifiers, access tokens, PII, incident notes, or one-off rollout plans. Put those details in your deployment system or private operations notes instead.
+
 ## Deployment templates
 
 The `deploy/coolify/` directory contains compose templates for:
@@ -94,4 +83,3 @@ go build -buildvcs=false ./...
 ```
 
 If you change SQL queries or migrations, regenerate sqlc output before running tests.
-

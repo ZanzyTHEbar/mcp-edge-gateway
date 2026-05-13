@@ -4,6 +4,7 @@ const (
 	EnvPlatformEnv         = "MCP_PLATFORM_ENV"
 	EnvPlatformLogLevel    = "MCP_PLATFORM_LOG_LEVEL"
 	EnvPlatformDatabaseURL = "MCP_PLATFORM_DATABASE_URL"
+	EnvDockerNetwork       = "MCP_DOCKER_NETWORK"
 )
 
 const (

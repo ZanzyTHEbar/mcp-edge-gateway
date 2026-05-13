@@ -47,6 +47,22 @@ func TestConfigValidateRejectsTenantRuntimeWithoutRenderPrereqs(t *testing.T) {
 	require.ErrorContains(t, err, "MCP_CONTROL_PLANE_MEALIE_BASE_URL")
 }
 
+func TestConfigValidateRejectsInvalidDockerNetworkName(t *testing.T) {
+	t.Parallel()
+
+	for _, network := range []string{"", "bad network", "bad:network", "#bad", "_bad", "bad\nnetwork"} {
+		cfg := validBaseControlPlaneConfig()
+		cfg.DockerNetwork = network
+
+		err := cfg.Validate()
+		require.ErrorContains(t, err, "MCP_DOCKER_NETWORK")
+	}
+
+	cfg := validBaseControlPlaneConfig()
+	cfg.DockerNetwork = "example_network-1.prod"
+	require.NoError(t, cfg.Validate())
+}
+
 func TestConfigValidateAllowsCompleteTenantRuntimeConfig(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +135,7 @@ func TestConfigValidateRejectsUnknownTenantImageMode(t *testing.T) {
 func validBaseControlPlaneConfig() Config {
 	return Config{
 		DatabaseURL:         "file:data/mcp-platform.db",
+		DockerNetwork:       "coolify",
 		HTTPBindAddr:        ":8081",
 		ReconcileInterval:   30 * time.Second,
 		HealthcheckInterval: 30 * time.Second,

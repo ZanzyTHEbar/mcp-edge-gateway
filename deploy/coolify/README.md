@@ -79,7 +79,7 @@ Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-pla
 
 Set `MCP_PLATFORM_DATA_VOLUME` if your environment uses a different persistent volume name. If you deploy the control plane and edge as separate applications, ensure both applications mount the same persistent volume. Do not rely on deployment-platform-generated per-application volume names unless you have verified they resolve to the same storage.
 
-Set `MCP_DOCKER_NETWORK` if your external Docker network is not named `coolify`.
+Set `MCP_DOCKER_NETWORK` if your external Docker network is not named `coolify`. The control plane also uses this value when it renders tenant workload compose files, so the core stack and tenant services stay on the same external network.
 
 ## Tenant image mode
 

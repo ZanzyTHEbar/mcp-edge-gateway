@@ -18,6 +18,7 @@ const (
 	defaultTenantImageActualBudget = "actual-mcp-server:latest"
 	defaultTenantImageMemory       = "mcp-memory-libsql-go:latest"
 	defaultTenantImageMealie       = "mealie-mcp:latest"
+	tenantComposeNetworkAlias      = "mcp_tenant_network"
 	deleteRequeueInterval          = 2 * time.Minute
 )
 
@@ -514,6 +515,7 @@ func renderMealieTenant(cfg Config, tenant TenantInstance, service catalog.Servi
 	}
 
 	image := valueOrDefault(cfg.TenantImageMealie, defaultTenantImageMealie)
+	network := valueOrDefault(cfg.DockerNetwork, "coolify")
 	compose := fmt.Sprintf(`services:
   %s:
     image: %s
@@ -523,11 +525,12 @@ func renderMealieTenant(cfg Config, tenant TenantInstance, service catalog.Servi
       MEALIE_BASE_URL: ${MEALIE_BASE_URL}
       BEARER_TOKEN_OAUTH2PASSWORDBEARER: ${BEARER_TOKEN_OAUTH2PASSWORDBEARER}
     networks:
-      - coolify
+      - %s
 networks:
-  coolify:
+  %s:
     external: true
-`, tenant.TenantInstanceName, image)
+    name: %s
+`, tenant.TenantInstanceName, image, tenantComposeNetworkAlias, tenantComposeNetworkAlias, network)
 
 	envs := []CoolifyEnvVar{
 		{Key: "PORT", Value: itoa(service.InternalPort)},
@@ -550,6 +553,7 @@ func renderActualBudgetTenant(cfg Config, tenant TenantInstance, service catalog
 	}
 
 	image := valueOrDefault(cfg.TenantImageActualBudget, defaultTenantImageActualBudget)
+	network := valueOrDefault(cfg.DockerNetwork, "coolify")
 	compose := fmt.Sprintf(`services:
   %s:
     image: %s
@@ -570,14 +574,15 @@ func renderActualBudgetTenant(cfg Config, tenant TenantInstance, service catalog
       - mcp_data:/data
       - mcp_logs:/app/logs
     networks:
-      - coolify
+      - %s
 volumes:
   mcp_data: {}
   mcp_logs: {}
 networks:
-  coolify:
+  %s:
     external: true
-`, tenant.TenantInstanceName, image)
+    name: %s
+`, tenant.TenantInstanceName, image, tenantComposeNetworkAlias, tenantComposeNetworkAlias, network)
 
 	envs := []CoolifyEnvVar{
 		{Key: "HOST", Value: "0.0.0.0"},
@@ -605,6 +610,7 @@ networks:
 
 func renderMemoryTenant(cfg Config, tenant TenantInstance, service catalog.ServiceCatalogEntry, secrets map[string]string) (renderedTenantService, error) {
 	image := valueOrDefault(cfg.TenantImageMemory, defaultTenantImageMemory)
+	network := valueOrDefault(cfg.DockerNetwork, "coolify")
 	compose := fmt.Sprintf(`services:
   %s:
     image: %s
@@ -624,13 +630,14 @@ func renderMemoryTenant(cfg Config, tenant TenantInstance, service catalog.Servi
     volumes:
       - memory_data:/data
     networks:
-      - coolify
+      - %s
 volumes:
   memory_data: {}
 networks:
-  coolify:
+  %s:
     external: true
-`, tenant.TenantInstanceName, image)
+    name: %s
+`, tenant.TenantInstanceName, image, tenantComposeNetworkAlias, tenantComposeNetworkAlias, network)
 
 	envs := []CoolifyEnvVar{
 		{Key: "PORT", Value: itoa(service.InternalPort)},

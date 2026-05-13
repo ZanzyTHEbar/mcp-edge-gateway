@@ -32,11 +32,14 @@ func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {
 		TenantInstanceName: "memory-subject-a",
 	}
 
-	rendered, err := renderMemoryTenant(Config{}, tenant, service, map[string]string{
+	rendered, err := renderMemoryTenant(Config{DockerNetwork: "example-network"}, tenant, service, map[string]string{
 		"libsql-url":        "libsql://memory.example",
 		"libsql-auth-token": "secret-token",
 	})
 	require.NoError(t, err)
+	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "- mcp_tenant_network")
+	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "name: example-network")
+	require.NotContains(t, rendered.CreateRequest.DockerComposeRaw, "- coolify")
 	require.NotContains(t, rendered.CreateRequest.DockerComposeRaw, "stdio")
 	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "TRANSPORT: ${TRANSPORT}")
 	require.Contains(t, rendered.CreateRequest.DockerComposeRaw, "SSE_ENDPOINT: ${SSE_ENDPOINT}")
@@ -50,6 +53,42 @@ func TestRenderMemoryTenantUsesSSEContract(t *testing.T) {
 	require.Equal(t, "/sse", envs["SSE_ENDPOINT"])
 	require.Equal(t, "libsql://memory.example", envs["LIBSQL_URL"])
 	require.Equal(t, "secret-token", envs["LIBSQL_AUTH_TOKEN"])
+}
+
+func TestRenderTenantsUsePinnedImageOverrides(t *testing.T) {
+	t.Parallel()
+
+	services := catalog.DefaultCatalogV1()
+	tenant := TenantInstance{SubjectKey: "subject-a"}
+	cfg := Config{
+		DockerNetwork:           "example-network",
+		MealieBaseURL:           "https://mealie.example.com",
+		ActualServerURL:         "https://budget.example.com",
+		TenantImageMealie:       "registry.example.com/mealie@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TenantImageActualBudget: "registry.example.com/actual@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		TenantImageMemory:       "registry.example.com/memory@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	}
+
+	tenant.ServiceID = "mealie"
+	tenant.TenantInstanceName = "mealie-subject-a"
+	mealie, err := renderMealieTenant(cfg, tenant, services[0], map[string]string{"api-token": "token-value"})
+	require.NoError(t, err)
+	require.Contains(t, mealie.CreateRequest.DockerComposeRaw, "image: "+cfg.TenantImageMealie)
+	require.Contains(t, mealie.CreateRequest.DockerComposeRaw, "name: example-network")
+
+	tenant.ServiceID = "actualbudget"
+	tenant.TenantInstanceName = "actualbudget-subject-a"
+	actual, err := renderActualBudgetTenant(cfg, tenant, services[1], map[string]string{"actual-api-key": "api-key", "budget-sync-id": "sync-id"})
+	require.NoError(t, err)
+	require.Contains(t, actual.CreateRequest.DockerComposeRaw, "image: "+cfg.TenantImageActualBudget)
+	require.Contains(t, actual.CreateRequest.DockerComposeRaw, "name: example-network")
+
+	tenant.ServiceID = "memory"
+	tenant.TenantInstanceName = "memory-subject-a"
+	memory, err := renderMemoryTenant(cfg, tenant, services[2], map[string]string{"libsql-url": "libsql://memory.example", "libsql-auth-token": "secret-token"})
+	require.NoError(t, err)
+	require.Contains(t, memory.CreateRequest.DockerComposeRaw, "image: "+cfg.TenantImageMemory)
+	require.Contains(t, memory.CreateRequest.DockerComposeRaw, "name: example-network")
 }
 
 func TestRenderMealieTenantUsesLocalDefaultImage(t *testing.T) {

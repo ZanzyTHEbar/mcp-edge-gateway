@@ -14,6 +14,7 @@ type Config struct {
 	PlatformEnv                      string
 	LogLevel                         string
 	DatabaseURL                      string
+	DockerNetwork                    string
 	HTTPBindAddr                     string
 	ReconcileInterval                time.Duration
 	HealthcheckInterval              time.Duration
@@ -44,6 +45,7 @@ func LoadConfig() (Config, error) {
 	viper.AutomaticEnv()
 	viper.SetDefault(contracts.EnvPlatformEnv, "production")
 	viper.SetDefault(contracts.EnvPlatformLogLevel, "info")
+	viper.SetDefault(contracts.EnvDockerNetwork, "coolify")
 	viper.SetDefault(contracts.EnvControlPlaneHTTPBindAddr, ":8081")
 	viper.SetDefault(contracts.EnvControlPlaneReconcileInterval, "30s")
 	viper.SetDefault(contracts.EnvControlPlaneHealthcheckInterval, "30s")
@@ -63,6 +65,7 @@ func LoadConfig() (Config, error) {
 		PlatformEnv:                      strings.TrimSpace(viper.GetString(contracts.EnvPlatformEnv)),
 		LogLevel:                         strings.TrimSpace(viper.GetString(contracts.EnvPlatformLogLevel)),
 		DatabaseURL:                      strings.TrimSpace(viper.GetString(contracts.EnvPlatformDatabaseURL)),
+		DockerNetwork:                    strings.TrimSpace(viper.GetString(contracts.EnvDockerNetwork)),
 		HTTPBindAddr:                     strings.TrimSpace(viper.GetString(contracts.EnvControlPlaneHTTPBindAddr)),
 		ReconcileInterval:                reconcileInterval,
 		HealthcheckInterval:              healthcheckInterval,
@@ -99,6 +102,12 @@ func LoadConfig() (Config, error) {
 func (c Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("%s is required", contracts.EnvPlatformDatabaseURL)
+	}
+	if c.DockerNetwork == "" {
+		return fmt.Errorf("%s is required", contracts.EnvDockerNetwork)
+	}
+	if !isDockerNetworkName(c.DockerNetwork) {
+		return fmt.Errorf("%s must be a valid Docker network name", contracts.EnvDockerNetwork)
 	}
 	if c.HTTPBindAddr == "" {
 		return fmt.Errorf("%s is required", contracts.EnvControlPlaneHTTPBindAddr)
@@ -225,6 +234,25 @@ func hasImmutableImageDigest(image string) bool {
 	}
 	for _, r := range digest {
 		if !('0' <= r && r <= '9') && !('a' <= r && r <= 'f') && !('A' <= r && r <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func isDockerNetworkName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		valid := ('a' <= r && r <= 'z') ||
+			('A' <= r && r <= 'Z') ||
+			('0' <= r && r <= '9') ||
+			r == '_' || r == '.' || r == '-'
+		if !valid {
+			return false
+		}
+		if i == 0 && !(('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9')) {
 			return false
 		}
 	}
