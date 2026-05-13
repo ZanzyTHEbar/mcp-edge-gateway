@@ -24,11 +24,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 	CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 	go build -trimpath -ldflags="-s -w" -o /out/mcp-control-plane ./cmd/mcp-control-plane
 
+RUN mkdir -p /out/data/mcp-platform
+
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 WORKDIR /app
 
 COPY --from=build /out/mcp-control-plane /app/mcp-control-plane
+COPY --from=build --chown=nonroot:nonroot /out/data/mcp-platform /data/mcp-platform
 
 EXPOSE 8081
 
