@@ -85,6 +85,10 @@ services:
         source: ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-control-plane-infisical-machine-client-secret
         target: /run/secrets/mcp-control-plane-infisical-machine-client-secret
         read_only: true
+      - type: bind
+        source: ${MCP_SECRETS_DIR:-/data/mcp-platform-secrets}/mcp-control-plane-admin-token
+        target: /run/secrets/mcp-control-plane-admin-token
+        read_only: true
     expose:
       - "8081"
     healthcheck:

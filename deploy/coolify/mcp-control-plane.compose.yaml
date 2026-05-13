@@ -85,6 +85,10 @@ services:
         source: /data/coolify/mcp-platform-secrets/mcp-control-plane-infisical-machine-client-secret
         target: /run/secrets/mcp-control-plane-infisical-machine-client-secret
         read_only: true
+      - type: bind
+        source: /data/coolify/mcp-platform-secrets/mcp-control-plane-admin-token
+        target: /run/secrets/mcp-control-plane-admin-token
+        read_only: true
     expose:
       - "8081"
     healthcheck:
