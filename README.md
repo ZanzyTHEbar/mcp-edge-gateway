@@ -13,15 +13,15 @@ The module currently produces two binaries:
 
 Implemented runtime capabilities now include:
 
-- shared MCP edge service paths for `mealie`, `actualbudget`, and `memory`
+- shared MCP edge service paths for MCP Server
 - MCP-facing OAuth metadata, authorization, token, refresh, registration, and introspection flows
 - durable SQLite/libSQL edge persistence for OAuth clients, tokens, browser sessions, and pending logins
 - durable edge audit-event persistence for OAuth, browser-login, and protected service access decisions
 - DB-backed subject-aware tenant resolution at the edge
 - control-plane persistence, goose migration execution, Authentik sync, Infisical secret retrieval, and Coolify tenant reconciliation
 - transport/path normalization for the day-one service catalog:
-  - `/actualbudget/mcp` -> upstream `/http`
-  - `/memory/mcp` -> targeted SSE-to-streamable-HTTP request bridge for the upstream memory service
+  - `mcp` -> upstream `/http`
+  - `mcp` -> targeted SSE-to-streamable-HTTP request bridge supported services
 
 ## Repository Layout
 
@@ -80,27 +80,3 @@ sqlc generate
 go test -buildvcs=false ./...
 go build -buildvcs=false ./...
 ```
-
-## Batch 18 Status
-
-Completed hardening in this module now includes:
-
-- fail-closed edge auth mode outside explicit fixture mode
-- operator-gated sensitive OAuth endpoints
-- restart-safe multi-instance edge state handling
-- goose-managed SQLite/libSQL migrations
-- degraded-startup behavior when the initial reconcile fails
-- softer Authentik snapshot ingestion for malformed rows and unknown service-group mappings
-- improved reconcile summary accounting and better upstream HTTP error detail for Authentik, Infisical, and Coolify failures
-
-Remaining rollout work is now packaging-oriented:
-
-- local artifact validation
-- deployment-readiness review against target dependencies
-- environment-specific rollout execution
-
-## Implementation Directive
-
-New runtime code in this module is written in Go.
-
-Existing TypeScript services such as `mealie-mcp` remain integration surfaces and reference implementations, not the implementation language for the new platform components.
