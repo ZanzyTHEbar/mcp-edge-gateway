@@ -11,6 +11,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
+      - /etc/nginx/conf.d:size=1m
       - /var/cache/nginx:size=16m
       - /var/run:size=1m
     security_opt:
