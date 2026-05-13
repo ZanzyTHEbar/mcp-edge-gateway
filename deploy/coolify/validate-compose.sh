@@ -43,6 +43,7 @@ validate_compose() {
 
   printf 'Validating %s...\n' "${name}"
   docker compose \
+    --project-directory "${repo_root}" \
     --env-file "${env_file}" \
     -f "${compose_file}" \
     config --quiet
@@ -53,6 +54,7 @@ render_compose_json() {
   output_file="$2"
 
   docker compose \
+    --project-directory "${repo_root}" \
     --env-file "${env_file}" \
     -f "${compose_file}" \
     config --format json >"${output_file}"

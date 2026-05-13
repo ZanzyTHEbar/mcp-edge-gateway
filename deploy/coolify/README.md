@@ -21,7 +21,7 @@ The templates are intentionally generic. Configure hostnames, secrets, image nam
 
 Use the `*.compose.yaml` files when the deployment platform can build from this repository.
 
-Run Coolify source-build templates with the repository root as the Compose project directory so the root Dockerfiles and Go source tree are available to the build. Source-build templates set their build contexts to the repository root relative to this directory, so `docker compose -f deploy/coolify/<file>.compose.yaml config` from the repository root resolves root Dockerfiles correctly.
+Coolify runs source-build templates with the repository root as the Compose project directory, so the root Dockerfiles and Go source tree are available to the build. Source-build templates set their build contexts to `.` and rely on that project directory; local validation should model Coolify with `--project-directory <repo-root>` rather than assuming `docker compose -f deploy/coolify/<file>.compose.yaml ...` alone is sufficient.
 
 ### Prebuilt-image mode
 
@@ -41,7 +41,7 @@ Before deploying or changing these templates, run:
 deploy/coolify/validate-compose.sh
 ```
 
-The script resolves the repository root from its own location, supplies non-secret dummy values for required Compose interpolation, and runs `docker compose config --quiet` against all Coolify source-build and prebuilt-image templates. It also checks that every source-build service renders a repository-root build context with the expected root Dockerfile. This validation requires the Docker Compose CLI and `python3`; it does not start containers or require a live Docker daemon.
+The script resolves the repository root from its own location, supplies non-secret dummy values for required Compose interpolation, and runs `docker compose --project-directory <repo-root> config --quiet` against all Coolify source-build and prebuilt-image templates. It also checks that every source-build service renders a repository-root build context with the expected root Dockerfile. This validation requires the Docker Compose CLI and `python3`; it does not start containers or require a live Docker daemon.
 
 ## Required configuration
 
