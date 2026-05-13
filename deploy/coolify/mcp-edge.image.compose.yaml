@@ -63,4 +63,5 @@ networks:
 
 volumes:
   mcp-platform-data:
-    name: ${MCP_PLATFORM_DATA_VOLUME:-mcp-platform-data}
+    name: ${MCP_PLATFORM_DATA_VOLUME:?set MCP_PLATFORM_DATA_VOLUME}
+    external: true

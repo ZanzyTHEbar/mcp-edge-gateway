@@ -72,7 +72,7 @@ Secret values must be supplied by your deployment process. Do not commit secret 
 file:/data/mcp-platform/mcp-platform.db
 ```
 
-Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-platform`.
+Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-platform`. The edge-only templates require `MCP_PLATFORM_DATA_VOLUME` to name an existing external volume so a separately deployed edge app can share the control-plane SQLite database.
 
 Set `MCP_PLATFORM_DATA_VOLUME` if your environment uses a different persistent volume name. If you deploy the control plane and edge as separate applications, ensure both applications mount the same persistent volume. Do not rely on deployment-platform-generated per-application volume names unless you have verified they resolve to the same storage.
 
