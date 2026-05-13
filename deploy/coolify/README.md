@@ -51,7 +51,7 @@ At minimum, configure:
 
 The Coolify templates mount runtime secrets from `/data/coolify/mcp-platform-secrets`, which is visible to Coolify's deployment build container on standard installations. The root `docker-compose.yaml` remains configurable with `MCP_SECRETS_DIR` for non-Coolify deployments.
 
-The templates pass `MCP_DOCKER_NETWORK` and shared database mount variables into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used elsewhere.
+The templates pass `MCP_DOCKER_NETWORK` into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used elsewhere.
 
 Expected files:
 
@@ -72,9 +72,9 @@ Secret values must be supplied by your deployment process. Do not commit secret 
 file:/data/mcp-platform/mcp-platform.db
 ```
 
-Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-platform`. The edge-only templates require `MCP_PLATFORM_DATA_PATH` to bind-mount the existing host directory that contains the control-plane SQLite database, so a separately deployed edge app can share the same database without depending on deployment-platform volume renaming behavior.
+Both core services mount the shared `mcp-platform-data` volume at `/data/mcp-platform`. The edge-only templates bind-mount `/data/coolify/mcp-platform-data` so a separately deployed edge app can share the control-plane SQLite database without depending on deployment-platform volume renaming behavior.
 
-Set `MCP_PLATFORM_DATA_PATH` to the host path of the existing database directory. If your platform preserves external named volumes across separate applications, you may adapt the template to use that volume, but verify both applications resolve to the same storage before deploying edge.
+Ensure `/data/coolify/mcp-platform-data` on the deployment host resolves to the existing database directory before deploying edge. If your platform preserves external named volumes across separate applications, you may adapt the template to use that volume, but verify both applications resolve to the same storage before deploying edge.
 
 Set `MCP_DOCKER_NETWORK` if your external Docker network is not named `coolify`. The control plane also uses this value when it renders tenant workload compose files, so the core stack and tenant services stay on the same external network.
 
