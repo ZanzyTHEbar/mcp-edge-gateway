@@ -58,6 +58,8 @@ MCP_SECRETS_DIR=/path/to/mcp-secrets
 
 If unset, the templates use `/data/mcp-platform-secrets`.
 
+The templates also pass `MCP_SECRETS_DIR`, `MCP_PLATFORM_DATA_VOLUME`, and `MCP_DOCKER_NETWORK` into service environment blocks. Some deployment platforms only expose variables to Compose interpolation when they appear in a service environment, even if the variables are also used in `volumes:` or `networks:`.
+
 Expected files:
 
 - `mcp-control-plane-infisical-machine-client-secret`
