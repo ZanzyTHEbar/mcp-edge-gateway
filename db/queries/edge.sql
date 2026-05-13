@@ -8,12 +8,13 @@ FROM oauth_clients
 WHERE client_id = sqlc.arg(client_id);
 
 -- name: UpsertOAuthSession :exec
-INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-VALUES (sqlc.arg(session_id), NULLIF(sqlc.arg(subject_sub), ''), sqlc.arg(client_id), NULLIF(sqlc.arg(service_id), ''), sqlc.arg(redirect_uri), sqlc.arg(scope), NULLIF(sqlc.arg(code_challenge), ''), NULLIF(sqlc.arg(code_challenge_method), ''), sqlc.narg(authorization_code_hash), sqlc.arg(authorization_code_ciphertext), sqlc.narg(access_token_hash), sqlc.arg(access_token_ciphertext), sqlc.narg(refresh_token_hash), sqlc.arg(refresh_token_ciphertext), sqlc.narg(code_create_at), sqlc.arg(code_expires_in_seconds), sqlc.narg(access_create_at), sqlc.arg(access_expires_in_seconds), sqlc.narg(refresh_create_at), sqlc.arg(refresh_expires_in_seconds), sqlc.narg(expires_at), NULL, CURRENT_TIMESTAMP)
+INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
+VALUES (sqlc.arg(session_id), NULLIF(sqlc.arg(subject_sub), ''), sqlc.arg(client_id), NULLIF(sqlc.arg(service_id), ''), sqlc.arg(resource), sqlc.arg(redirect_uri), sqlc.arg(scope), NULLIF(sqlc.arg(code_challenge), ''), NULLIF(sqlc.arg(code_challenge_method), ''), sqlc.narg(authorization_code_hash), sqlc.arg(authorization_code_ciphertext), sqlc.narg(access_token_hash), sqlc.arg(access_token_ciphertext), sqlc.narg(refresh_token_hash), sqlc.arg(refresh_token_ciphertext), sqlc.narg(code_create_at), sqlc.arg(code_expires_in_seconds), sqlc.narg(access_create_at), sqlc.arg(access_expires_in_seconds), sqlc.narg(refresh_create_at), sqlc.arg(refresh_expires_in_seconds), sqlc.narg(expires_at), NULL, CURRENT_TIMESTAMP)
 ON CONFLICT(session_id) DO UPDATE SET
     subject_sub = excluded.subject_sub,
     client_id = excluded.client_id,
     service_id = excluded.service_id,
+    resource = excluded.resource,
     redirect_uri = excluded.redirect_uri,
     scope = excluded.scope,
     code_challenge = excluded.code_challenge,
@@ -44,26 +45,31 @@ DELETE FROM oauth_sessions WHERE access_token_hash = sqlc.arg(access_token_hash)
 DELETE FROM oauth_sessions WHERE refresh_token_hash = sqlc.arg(refresh_token_hash);
 
 -- name: GetOAuthSessionByAccessHash :one
-SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 FROM oauth_sessions
 WHERE access_token_hash = sqlc.arg(access_token_hash);
 
 -- name: GetOAuthSessionByRefreshHash :one
-SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 FROM oauth_sessions
 WHERE refresh_token_hash = sqlc.arg(refresh_token_hash);
+
+-- name: GetOAuthSessionByCodeHash :one
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+FROM oauth_sessions
+WHERE authorization_code_hash = sqlc.arg(authorization_code_hash) AND consumed_at IS NULL;
 
 -- name: ConsumeOAuthSessionByCodeHash :one
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE authorization_code_hash = sqlc.arg(authorization_code_hash) AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
 
 -- name: ConsumeOAuthSessionByRefreshHash :one
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE refresh_token_hash = sqlc.arg(refresh_token_hash) AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
 
 -- name: PutPendingLogin :exec
 INSERT INTO edge_pending_logins (state, return_to, nonce, expires_at, updated_at)

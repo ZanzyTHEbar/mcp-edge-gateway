@@ -36,6 +36,9 @@ type Config struct {
 	OperatorTokenPath              string
 	SessionEncryptionKeyPath       string
 	CookieSecure                   bool
+	CORSAllowedOrigins             []string
+	DCREnabled                     bool
+	CIMDEnabled                    bool
 	FixtureUpstreamMealieURL       string
 	FixtureUpstreamActualBudgetURL string
 	FixtureUpstreamMemoryURL       string
@@ -70,6 +73,9 @@ func LoadConfig() Config {
 		OperatorTokenPath:              strings.TrimSpace(viper.GetString(contracts.EnvEdgeOperatorTokenPath)),
 		SessionEncryptionKeyPath:       strings.TrimSpace(viper.GetString(contracts.EnvEdgeSessionEncryptionKeyPath)),
 		CookieSecure:                   viper.GetBool(contracts.EnvEdgeCookieSecure),
+		CORSAllowedOrigins:             splitCommaSeparated(viper.GetString(contracts.EnvEdgeCORSAllowedOrigins)),
+		DCREnabled:                     viper.GetBool(contracts.EnvEdgeDCREnabled),
+		CIMDEnabled:                    viper.GetBool(contracts.EnvEdgeCIMDEnabled),
 		FixtureUpstreamMealieURL:       strings.TrimSpace(viper.GetString(envEdgeFixtureUpstreamMealieURL)),
 		FixtureUpstreamActualBudgetURL: strings.TrimSpace(viper.GetString(envEdgeFixtureUpstreamActualBudgetURL)),
 		FixtureUpstreamMemoryURL:       strings.TrimSpace(viper.GetString(envEdgeFixtureUpstreamMemoryURL)),

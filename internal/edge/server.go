@@ -28,6 +28,7 @@ type Server struct {
 	resolver                  Resolver
 	catalogCache              *CatalogCache
 	fixtureInsecureSkipVerify bool
+	corsAllowedOrigins        []string
 	stateStore                edgeStateStore
 	oauth                     *OAuthService
 	auth                      *AuthRuntime
@@ -95,6 +96,7 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		resolver:                  resolver,
 		catalogCache:              catalogCache,
 		fixtureInsecureSkipVerify: cfg.FixtureInsecureSkipVerify,
+		corsAllowedOrigins:        append([]string(nil), cfg.CORSAllowedOrigins...),
 		stateStore:                stateStore,
 		auth:                      authRuntime,
 		oauth:                     oauthService,
@@ -117,7 +119,7 @@ func (s *Server) Handler() http.Handler {
 	s.oauth.RegisterRoutes(mux)
 	mux.HandleFunc("/", s.handleServiceRequest)
 
-	return s.withRequestContext(mux)
+	return s.withRequestContext(s.withCORS(mux))
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, cfg Config) error {
@@ -222,6 +224,7 @@ func (s *Server) handleRootDiscovery(w http.ResponseWriter, r *http.Request) {
 		"catalog_status":    catalogStatus(s.catalogCache.LastError()),
 		"oauth": map[string]string{
 			"authorization_server_metadata": s.publicURL + "/.well-known/oauth-authorization-server",
+			"openid_configuration":          s.publicURL + "/.well-known/openid-configuration",
 			"protected_resource_metadata":   s.publicURL + "/.well-known/oauth-protected-resource",
 			"registration_endpoint":         s.publicURL + "/oauth/register",
 			"authorization_endpoint":        s.publicURL + "/oauth/authorize",
@@ -248,7 +251,7 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 
 		tokenInfo, err := s.oauth.ValidateBearerToken(r)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp-edge", resource_metadata="`+strings.TrimRight(s.publicURL, "/")+`/.well-known/oauth-protected-resource"`)
+			w.Header().Set("WWW-Authenticate", s.bearerChallenge(service, "invalid_token"))
 			s.recordAuditEvent(r.Context(), edgeAuditEvent{
 				ServiceID:   service.ServiceID,
 				EventType:   "mcp.service.access.denied",
@@ -261,6 +264,7 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 			return
 		}
 		if !scopeIncludesService(tokenInfo.GetScope(), service.ServiceID) {
+			w.Header().Set("WWW-Authenticate", s.bearerChallenge(service, "insufficient_scope"))
 			s.recordAuditEvent(r.Context(), edgeAuditEvent{
 				ActorSubjectSub: tokenInfo.GetUserID(),
 				ServiceID:       service.ServiceID,
@@ -271,6 +275,17 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 				},
 			})
 			writeJSONError(w, http.StatusForbidden, "insufficient_scope", "token scope does not cover this MCP service")
+			return
+		}
+		if tokenInfoResource(tokenInfo) != strings.TrimRight(s.publicURL, "/")+service.PublicPath {
+			w.Header().Set("WWW-Authenticate", s.bearerChallenge(service, "invalid_token"))
+			s.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: tokenInfo.GetUserID(),
+				ServiceID:       service.ServiceID,
+				EventType:       "mcp.service.access.denied",
+				EventStatus:     "invalid_resource",
+			})
+			writeJSONError(w, http.StatusUnauthorized, "invalid_token", "token resource does not cover this MCP service")
 			return
 		}
 		if s.auth != nil {
@@ -364,6 +379,47 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 		)
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+func (s *Server) bearerChallenge(service catalog.ServiceCatalogEntry, errorCode string) string {
+	scope := "mcp:" + service.ServiceID
+	metadataURL := strings.TrimRight(s.publicURL, "/") + "/.well-known/oauth-protected-resource/" + service.ServiceID
+	return `Bearer realm="mcp-edge", error="` + errorCode + `", scope="` + scope + `", resource_metadata="` + metadataURL + `"`
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			if allowedOrigin, ok := s.allowedCORSOrigin(origin); ok {
+				w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID")
+				w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate, MCP-Session-Id")
+			}
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) allowedCORSOrigin(origin string) (string, bool) {
+	if len(s.corsAllowedOrigins) == 0 {
+		return "", false
+	}
+	for _, allowed := range s.corsAllowedOrigins {
+		allowed = strings.TrimSpace(allowed)
+		switch {
+		case allowed == "*":
+			return "*", true
+		case allowed == origin:
+			return origin, true
+		}
+	}
+	return "", false
 }
 
 func (s *Server) withRequestContext(next http.Handler) http.Handler {

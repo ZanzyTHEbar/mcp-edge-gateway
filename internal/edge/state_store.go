@@ -30,7 +30,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const tokenSessionIDExtensionKey = "sid"
+const (
+	tokenSessionIDExtensionKey = "sid"
+	tokenResourceExtensionKey  = "resource"
+)
 
 type edgeStateStore interface {
 	oauth2.ClientStore
@@ -95,6 +98,7 @@ type oauthSessionRecord struct {
 	SubjectSub                  *string
 	ClientID                    string
 	ServiceID                   *string
+	Resource                    string
 	RedirectURI                 string
 	Scope                       string
 	CodeChallenge               *string
@@ -180,7 +184,7 @@ func (s *memoryEdgeStateStore) CreateClient(ctx context.Context, record register
 	client := &models.Client{
 		ID:     record.ID,
 		Secret: record.Secret,
-		Domain: firstRedirectURI(record.RedirectURIs),
+		Domain: redirectURIDomain(record.RedirectURIs),
 		Public: record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone,
 	}
 	clientInfo := confidentialClient{
@@ -227,6 +231,9 @@ func (s *memoryEdgeStateStore) GetByCode(ctx context.Context, code string) (oaut
 	if err := s.validateTokenInfoAuthorization(ctx, tokenInfo); err != nil {
 		return nil, err
 	}
+	if err := validateExpectedResourceBinding(ctx, tokenInfoResource(tokenInfo)); err != nil {
+		return nil, err
+	}
 	return tokenInfo, nil
 }
 
@@ -240,6 +247,9 @@ func (s *memoryEdgeStateStore) GetByRefresh(ctx context.Context, refresh string)
 		return tokenInfo, err
 	}
 	if err := validateRefreshClientBinding(ctx, tokenInfo.GetClientID()); err != nil {
+		return nil, err
+	}
+	if err := validateExpectedResourceBinding(ctx, tokenInfoResource(tokenInfo)); err != nil {
 		return nil, err
 	}
 	if err := s.validateTokenInfoAuthorization(ctx, tokenInfo); err != nil {
@@ -429,11 +439,11 @@ func hashOpaqueValue(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func firstRedirectURI(values []string) string {
+func redirectURIDomain(values []string) string {
 	if len(values) == 0 {
 		return ""
 	}
-	return values[0]
+	return strings.Join(values, "\n")
 }
 
 func parseRequestedServiceScopes(scope string) ([]string, bool) {
@@ -560,6 +570,37 @@ func tokenInfoSessionID(info oauth2.TokenInfo) string {
 	return strings.TrimSpace(ext.GetExtension().Get(tokenSessionIDExtensionKey))
 }
 
+func tokenInfoResource(info oauth2.TokenInfo) string {
+	ext, ok := info.(oauth2.ExtendableTokenInfo)
+	if !ok {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(ext.GetExtension().Get(tokenResourceExtensionKey)), "/")
+}
+
+func setTokenInfoResource(info oauth2.ExtendableTokenInfo, resource string) {
+	resource = strings.TrimRight(strings.TrimSpace(resource), "/")
+	if resource == "" {
+		return
+	}
+	values := info.GetExtension()
+	if values == nil {
+		values = make(url.Values)
+	}
+	values.Set(tokenResourceExtensionKey, resource)
+	info.SetExtension(values)
+}
+
+func validateExpectedResourceBinding(ctx context.Context, tokenResource string) error {
+	expectedResource, _ := ctx.Value(expectedResourceContextKey{}).(string)
+	expectedResource = strings.TrimRight(strings.TrimSpace(expectedResource), "/")
+	tokenResource = strings.TrimRight(strings.TrimSpace(tokenResource), "/")
+	if expectedResource == "" || expectedResource == tokenResource {
+		return nil
+	}
+	return fmt.Errorf("token was not issued for this MCP resource")
+}
+
 func setTokenInfoSessionID(info oauth2.TokenInfo, sessionID string) {
 	ext, ok := info.(oauth2.ExtendableTokenInfo)
 	if !ok {
@@ -664,11 +705,11 @@ func (s *sqliteEdgeStateStore) GetByID(ctx context.Context, id string) (oauth2.C
 		userID = record.CreatedBySubjectSub.String
 	}
 	if record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone || !record.ClientSecretHash.Valid || strings.TrimSpace(record.ClientSecretHash.String) == "" {
-		return confidentialClient{id: id, domain: firstRedirectURI(redirectURIs), userID: userID, scopes: scopes}, nil
+		return confidentialClient{id: id, domain: redirectURIDomain(redirectURIs), userID: userID, scopes: scopes}, nil
 	}
 	return confidentialClient{
 		id:         id,
-		domain:     firstRedirectURI(redirectURIs),
+		domain:     redirectURIDomain(redirectURIs),
 		userID:     userID,
 		secretHash: record.ClientSecretHash.String,
 		scopes:     scopes,
@@ -694,6 +735,7 @@ func (s *sqliteEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo
 		return fmt.Errorf("parse oauth session id: %w", err)
 	}
 	serviceID := singleServiceIDFromScope(info.GetScope())
+	resource := tokenInfoResource(info)
 	codeHash, codeCiphertext, err := s.encryptOpaqueValue(info.GetCode())
 	if err != nil {
 		return err
@@ -712,6 +754,7 @@ func (s *sqliteEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo
 		SubjectSub:                  info.GetUserID(),
 		ClientID:                    info.GetClientID(),
 		ServiceID:                   serviceID,
+		Resource:                    resource,
 		RedirectUri:                 info.GetRedirectURI(),
 		Scope:                       info.GetScope(),
 		CodeChallenge:               info.GetCodeChallenge(),
@@ -766,11 +809,18 @@ func (s *sqliteEdgeStateStore) RemoveByRefresh(ctx context.Context, refresh stri
 }
 
 func (s *sqliteEdgeStateStore) GetByCode(ctx context.Context, code string) (oauth2.TokenInfo, error) {
-	record, err := s.consumeTokenRecord(ctx, "authorization_code_hash", code)
-	if err != nil || record == nil {
+	preflight, err := s.lookupTokenRecord(ctx, "authorization_code_hash", code)
+	if err != nil || preflight == nil {
 		return nil, err
 	}
-	if err := s.validateOAuthSessionAuthorization(ctx, *record); err != nil {
+	if err := s.validateOAuthSessionAuthorization(ctx, *preflight); err != nil {
+		return nil, err
+	}
+	if err := validateExpectedResourceBinding(ctx, preflight.Resource); err != nil {
+		return nil, err
+	}
+	record, err := s.consumeTokenRecord(ctx, "authorization_code_hash", code)
+	if err != nil || record == nil {
 		return nil, err
 	}
 	return s.buildTokenInfo(*record, code, "", "")
@@ -793,6 +843,9 @@ func (s *sqliteEdgeStateStore) GetByRefresh(ctx context.Context, refresh string)
 		return nil, err
 	}
 	if err := s.validateOAuthSessionAuthorization(ctx, *preflight); err != nil {
+		return nil, err
+	}
+	if err := validateExpectedResourceBinding(ctx, preflight.Resource); err != nil {
 		return nil, err
 	}
 	record, err := s.consumeTokenRecord(ctx, "refresh_token_hash", refresh)
@@ -1016,6 +1069,18 @@ func (s *sqliteEdgeStateStore) lookupTokenRecord(ctx context.Context, hashColumn
 	hash := sql.NullString{String: hashOpaqueValue(rawValue), Valid: true}
 	var record oauthSessionRecord
 	switch hashColumn {
+	case "authorization_code_hash":
+		row, err := s.queries.GetOAuthSessionByCodeHash(ctx, platformdb.GetOAuthSessionByCodeHashParams{AuthorizationCodeHash: hash})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		record, err = oauthSessionRecordFromCodeLookupRow(row)
+		if err != nil {
+			return nil, err
+		}
 	case "access_token_hash":
 		row, err := s.queries.GetOAuthSessionByAccessHash(ctx, platformdb.GetOAuthSessionByAccessHashParams{AccessTokenHash: hash})
 		if err != nil {
@@ -1093,6 +1158,7 @@ func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashR
 		SubjectSub:                  stringPtrFromNull(row.SubjectSub),
 		ClientID:                    row.ClientID,
 		ServiceID:                   stringPtrFromNull(row.ServiceID),
+		Resource:                    row.Resource,
 		RedirectURI:                 row.RedirectUri,
 		Scope:                       row.Scope,
 		CodeChallenge:               stringPtrFromNull(row.CodeChallenge),
@@ -1114,6 +1180,10 @@ func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashR
 }
 
 func oauthSessionRecordFromCodeRow(row platformdb.ConsumeOAuthSessionByCodeHashRow) (oauthSessionRecord, error) {
+	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+}
+
+func oauthSessionRecordFromCodeLookupRow(row platformdb.GetOAuthSessionByCodeHashRow) (oauthSessionRecord, error) {
 	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
 }
 
@@ -1154,6 +1224,7 @@ func (s *sqliteEdgeStateStore) buildTokenInfo(record oauthSessionRecord, rawCode
 	}
 	token.SetRedirectURI(record.RedirectURI)
 	token.SetScope(record.Scope)
+	setTokenInfoResource(token, record.Resource)
 	if record.CodeChallenge != nil {
 		token.SetCodeChallenge(*record.CodeChallenge)
 	}

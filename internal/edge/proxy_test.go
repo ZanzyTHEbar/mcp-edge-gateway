@@ -21,6 +21,38 @@ func TestRewriteProxyPathTranslatesActualBudgetPath(t *testing.T) {
 	require.Equal(t, "/http/tools/list", rewriteProxyPath("/actualbudget/mcp/tools/list", "/actualbudget/mcp", "/http"))
 }
 
+func TestStreamSafeReverseProxyForwardsMCPTransportHeaders(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/http", r.URL.Path)
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.Equal(t, "2025-11-25", r.Header.Get("MCP-Protocol-Version"))
+		require.Equal(t, "session-123", r.Header.Get("MCP-Session-Id"))
+		require.Equal(t, "event-456", r.Header.Get("Last-Event-ID"))
+		require.Equal(t, "application/json, text/event-stream", r.Header.Get("Accept"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+
+	handler := NewStreamSafeReverseProxy(targetURL, "/actualbudget/mcp", "/http", false, zerolog.New(io.Discard))
+	req := httptest.NewRequest(http.MethodPost, "/actualbudget/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)))
+	req.Header.Set("Authorization", "Bearer local-token")
+	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	req.Header.Set("MCP-Session-Id", "session-123")
+	req.Header.Set("Last-Event-ID", "event-456")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.JSONEq(t, `{"ok":true}`, res.Body.String())
+}
+
 func TestSSEToStreamableHTTPBridgeDoesNotWaitForNotificationResponse(t *testing.T) {
 	t.Parallel()
 

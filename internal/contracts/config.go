@@ -17,6 +17,9 @@ const (
 	EnvEdgeOperatorTokenPath         = "MCP_EDGE_OPERATOR_TOKEN_PATH"
 	EnvEdgeSessionEncryptionKeyPath  = "MCP_EDGE_SESSION_ENCRYPTION_KEY_PATH"
 	EnvEdgeCookieSecure              = "MCP_EDGE_COOKIE_SECURE"
+	EnvEdgeCORSAllowedOrigins        = "MCP_EDGE_CORS_ALLOWED_ORIGINS"
+	EnvEdgeDCREnabled                = "MCP_EDGE_DCR_ENABLED"
+	EnvEdgeCIMDEnabled               = "MCP_EDGE_CIMD_ENABLED"
 )
 
 const (

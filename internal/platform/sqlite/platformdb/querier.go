@@ -47,14 +47,14 @@ type Querier interface {
 	//  UPDATE oauth_sessions
 	//  SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 	//  WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
-	//  RETURNING session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 	ConsumeOAuthSessionByCodeHash(ctx context.Context, arg ConsumeOAuthSessionByCodeHashParams) (ConsumeOAuthSessionByCodeHashRow, error)
 	//ConsumeOAuthSessionByRefreshHash
 	//
 	//  UPDATE oauth_sessions
 	//  SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 	//  WHERE refresh_token_hash = ?1 AND consumed_at IS NULL
-	//  RETURNING session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 	ConsumeOAuthSessionByRefreshHash(ctx context.Context, arg ConsumeOAuthSessionByRefreshHashParams) (ConsumeOAuthSessionByRefreshHashRow, error)
 	//CountAllowedServiceGrants
 	//
@@ -157,13 +157,19 @@ type Querier interface {
 	GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) (GetOAuthClientRow, error)
 	//GetOAuthSessionByAccessHash
 	//
-	//  SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 	//  FROM oauth_sessions
 	//  WHERE access_token_hash = ?1
 	GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthSessionByAccessHashParams) (GetOAuthSessionByAccessHashRow, error)
+	//GetOAuthSessionByCodeHash
+	//
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  FROM oauth_sessions
+	//  WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
+	GetOAuthSessionByCodeHash(ctx context.Context, arg GetOAuthSessionByCodeHashParams) (GetOAuthSessionByCodeHashRow, error)
 	//GetOAuthSessionByRefreshHash
 	//
-	//  SELECT session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
 	//  FROM oauth_sessions
 	//  WHERE refresh_token_hash = ?1
 	GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuthSessionByRefreshHashParams) (GetOAuthSessionByRefreshHashRow, error)
@@ -308,12 +314,13 @@ type Querier interface {
 	UpdateTenantRuntimeStatus(ctx context.Context, arg UpdateTenantRuntimeStatusParams) error
 	//UpsertOAuthSession
 	//
-	//  INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-	//  VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, NULLIF(?7, ''), NULLIF(?8, ''), ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, NULL, CURRENT_TIMESTAMP)
+	//  INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
+	//  VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(session_id) DO UPDATE SET
 	//      subject_sub = excluded.subject_sub,
 	//      client_id = excluded.client_id,
 	//      service_id = excluded.service_id,
+	//      resource = excluded.resource,
 	//      redirect_uri = excluded.redirect_uri,
 	//      scope = excluded.scope,
 	//      code_challenge = excluded.code_challenge,

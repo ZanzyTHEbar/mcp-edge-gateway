@@ -13,6 +13,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestValidateCIMDURLRejectsPrivateHosts(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := url.Parse("https://127.0.0.1/client.json")
+	require.NoError(t, err)
+	require.ErrorContains(t, validateCIMDURL(context.Background(), parsed), "public addresses only")
+
+	parsed, err = url.Parse("http://client.example.com/client.json")
+	require.NoError(t, err)
+	require.ErrorContains(t, validateCIMDURL(context.Background(), parsed), "HTTPS URL")
+}
+
+func TestValidateRedirectURIRejectsUnsafeSchemes(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, validateRedirectURI("https://client.example.com/callback"))
+	require.NoError(t, validateRedirectURI("http://127.0.0.1:33418/callback"))
+	require.ErrorContains(t, validateRedirectURI("javascript:alert(1)"), "scheme must be https or loopback http")
+	require.ErrorContains(t, validateRedirectURI("data:text/plain,ok"), "scheme must be https or loopback http")
+	require.ErrorContains(t, validateRedirectURI("http://client.example.com/callback"), "loopback")
+}
+
 type staticResolver struct{}
 
 func (staticResolver) Resolve(ctx context.Context, serviceID string, subjectSub string) (UpstreamTarget, error) {
@@ -51,6 +73,16 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.Equal(t, "https://mcp.example.com/oauth/register", payload["registration_endpoint"])
 	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
 	require.Contains(t, payload["code_challenge_methods_supported"], "S256")
+	require.Equal(t, true, payload["resource_indicators_supported"])
+	require.Equal(t, true, payload["client_id_metadata_document_supported"])
+
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com", payload["issuer"])
 
 	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	res = httptest.NewRecorder()
@@ -60,6 +92,17 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
 	require.Equal(t, "https://mcp.example.com", payload["resource"])
 	require.Contains(t, payload["authorization_servers"], "https://mcp.example.com")
+
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mealie", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com/mealie/mcp", payload["resource"])
+	require.Equal(t, "Mealie", payload["resource_name"])
+	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
+	require.NotContains(t, payload["scopes_supported"], "mcp:actualbudget")
 }
 
 func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
@@ -106,6 +149,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
 			"&redirect_uri="+url.QueryEscape(registration.RedirectURIs[0])+
 			"&scope="+url.QueryEscape("mcp:mealie")+
+			"&resource="+url.QueryEscape("https://mcp.example.com/mealie/mcp")+
 			"&state="+url.QueryEscape("test-state")+
 			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
 			"&code_challenge_method=S256",
@@ -149,6 +193,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	tokenForm.Set("code", authCode)
 	tokenForm.Set("redirect_uri", registration.RedirectURIs[0])
 	tokenForm.Set("client_id", registration.ClientID)
+	tokenForm.Set("resource", "https://mcp.example.com/mealie/mcp")
 	tokenForm.Set("code_verifier", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
 
 	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
@@ -184,6 +229,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	require.Equal(t, registration.ClientID, introspection.ClientID)
 	require.Equal(t, "fixture-user", introspection.Sub)
 	require.Equal(t, "mcp:mealie", introspection.Scope)
+	require.Equal(t, "https://mcp.example.com/mealie/mcp", introspection.Resource)
 
 	serviceRequest := httptest.NewRequest(http.MethodGet, "/mealie/mcp", nil)
 	serviceRequest.Header.Set("Authorization", "Bearer "+accessToken)
@@ -192,6 +238,16 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, res.Code)
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
+
+	wrongServiceRequest := httptest.NewRequest(http.MethodGet, "/actualbudget/mcp", nil)
+	wrongServiceRequest.Header.Set("Authorization", "Bearer "+accessToken)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, wrongServiceRequest)
+
+	require.Equal(t, http.StatusForbidden, res.Code)
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `error="insufficient_scope"`)
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `scope="mcp:actualbudget"`)
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/actualbudget"`)
 
 	otherRegistrationBody := `{
 		"client_name":"other-client",
@@ -219,6 +275,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	wrongRefreshForm.Set("grant_type", "refresh_token")
 	wrongRefreshForm.Set("refresh_token", refreshToken)
 	wrongRefreshForm.Set("client_id", otherRegistration.ClientID)
+	wrongRefreshForm.Set("resource", "https://mcp.example.com/mealie/mcp")
 	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(wrongRefreshForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res = httptest.NewRecorder()
@@ -232,6 +289,7 @@ func TestOAuthRegistrationAuthorizationCodeAndIntrospection(t *testing.T) {
 	refreshForm.Set("grant_type", "refresh_token")
 	refreshForm.Set("refresh_token", refreshToken)
 	refreshForm.Set("client_id", registration.ClientID)
+	refreshForm.Set("resource", "https://mcp.example.com/mealie/mcp")
 
 	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(refreshForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -323,6 +381,7 @@ func TestOAuthAuthorizeRejectsScopeOutsideClientRegistration(t *testing.T) {
 		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
 			"&redirect_uri="+url.QueryEscape(registration.RedirectURIs[0])+
 			"&scope="+url.QueryEscape("mcp:actualbudget")+
+			"&resource="+url.QueryEscape("https://mcp.example.com/actualbudget/mcp")+
 			"&state="+url.QueryEscape("test-state")+
 			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
 			"&code_challenge_method=S256",
@@ -415,7 +474,7 @@ func TestOAuthRegistrationRejectsUnsupportedMetadata(t *testing.T) {
 	handler.ServeHTTP(res, req)
 
 	require.Equal(t, http.StatusBadRequest, res.Code)
-	require.Contains(t, res.Body.String(), "exactly one redirect URI is required")
+	require.Contains(t, res.Body.String(), "unsupported token endpoint auth method")
 }
 
 func TestOAuthRegistrationRequiresOperatorBearerToken(t *testing.T) {
@@ -432,6 +491,28 @@ func TestOAuthRegistrationRequiresOperatorBearerToken(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, res.Code)
 	require.Contains(t, res.Body.String(), "operator bearer token is required")
+}
+
+func TestOAuthRegistrationAllowsPublicDCRWhenEnabled(t *testing.T) {
+	cfg := testEdgeConfig()
+	cfg.DCREnabled = true
+	server, err := NewServer(cfg, zerolog.New(httptest.NewRecorder()), staticResolver{})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback","https://client.example.com/alternate"],
+		"scope":"mcp:mealie"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusCreated, res.Code)
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+	require.Len(t, registration.RedirectURIs, 2)
+	require.Equal(t, "none", registration.TokenEndpointAuthMethod)
 }
 
 func TestOAuthIntrospectionRequiresOperatorBearerToken(t *testing.T) {

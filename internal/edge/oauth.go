@@ -7,7 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +40,8 @@ type OAuthService struct {
 	stateStore    edgeStateStore
 	manager       *manage.Manager
 	server        *oauth2server.Server
+	dcrEnabled    bool
+	cimdEnabled   bool
 }
 
 type registeredClient struct {
@@ -52,6 +57,7 @@ type registeredClient struct {
 }
 
 type clientRegistrationRequest struct {
+	ClientID                string   `json:"client_id"`
 	ClientName              string   `json:"client_name"`
 	RedirectURIs            []string `json:"redirect_uris"`
 	GrantTypes              []string `json:"grant_types"`
@@ -78,12 +84,14 @@ type tokenIntrospectionResponse struct {
 	ClientID  string `json:"client_id,omitempty"`
 	Sub       string `json:"sub,omitempty"`
 	Scope     string `json:"scope,omitempty"`
+	Resource  string `json:"resource,omitempty"`
 	TokenType string `json:"token_type,omitempty"`
 	Exp       int64  `json:"exp,omitempty"`
 	Iat       int64  `json:"iat,omitempty"`
 }
 
 type refreshClientIDContextKey struct{}
+type expectedResourceContextKey struct{}
 
 func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCache, stateStore edgeStateStore, grants GrantAuthorizer, browserAuth *AuthRuntime) (*OAuthService, error) {
 	if stateStore == nil {
@@ -102,11 +110,17 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 	manager := manage.NewDefaultManager()
 	manager.MapTokenStorage(stateStore)
 	manager.MapClientStorage(stateStore)
+	manager.SetExtractExtensionHandler(func(tgr *oauth2.TokenGenerateRequest, ti oauth2.ExtendableTokenInfo) {
+		setTokenInfoResource(ti, tgr.Request.FormValue("resource"))
+	})
 	manager.SetValidateURIHandler(func(baseURI, redirectURI string) error {
-		if strings.TrimSpace(baseURI) != strings.TrimSpace(redirectURI) {
-			return oauth2errors.ErrInvalidRedirectURI
+		redirectURI = strings.TrimSpace(redirectURI)
+		for _, registeredURI := range strings.Split(baseURI, "\n") {
+			if strings.TrimSpace(registeredURI) == redirectURI {
+				return nil
+			}
 		}
-		return nil
+		return oauth2errors.ErrInvalidRedirectURI
 	})
 	manager.SetAuthorizeCodeTokenCfg(manage.DefaultAuthorizeCodeTokenCfg)
 	manager.SetRefreshTokenCfg(manage.DefaultRefreshTokenCfg)
@@ -143,12 +157,16 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 		stateStore:    stateStore,
 		manager:       manager,
 		server:        srv,
+		dcrEnabled:    cfg.DCREnabled,
+		cimdEnabled:   cfg.CIMDEnabled,
 	}, nil
 }
 
 func (o *OAuthService) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-authorization-server", o.handleAuthorizationServerMetadata)
+	mux.HandleFunc("/.well-known/openid-configuration", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", o.handleProtectedResourceMetadata)
+	mux.HandleFunc("/.well-known/oauth-protected-resource/", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/oauth/register", o.handleClientRegistration)
 	mux.HandleFunc("/oauth/authorize", o.handleAuthorize)
 	mux.HandleFunc("/oauth/token", o.handleToken)
@@ -177,6 +195,9 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{tokenEndpointAuthMethodNone, tokenEndpointAuthMethodClientPost, tokenEndpointAuthMethodClientBasic},
 		"scopes_supported":                      o.catalog.Scopes(),
+		"resource_indicators_supported":         true,
+		"client_id_metadata_document_supported": true,
+		"dynamic_client_registration_supported": o.dcrEnabled,
 	})
 }
 
@@ -187,13 +208,29 @@ func (o *OAuthService) handleProtectedResourceMetadata(w http.ResponseWriter, r 
 		return
 	}
 
+	serviceID := strings.TrimPrefix(r.URL.Path, "/.well-known/oauth-protected-resource/")
+	if serviceID != r.URL.Path {
+		serviceID = strings.Trim(serviceID, "/")
+		service, ok := o.catalog.ServiceByID(serviceID)
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+			return
+		}
+		o.writeProtectedResourceMetadata(w, o.publicBaseURL+service.PublicPath, []string{"mcp:" + service.ServiceID}, service.DisplayName)
+		return
+	}
+
+	o.writeProtectedResourceMetadata(w, o.publicBaseURL, o.catalog.Scopes(), "mcp-edge")
+}
+
+func (o *OAuthService) writeProtectedResourceMetadata(w http.ResponseWriter, resource string, scopes []string, resourceName string) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource":                              o.publicBaseURL,
+		"resource":                              resource,
 		"authorization_servers":                 []string{o.publicBaseURL},
-		"scopes_supported":                      o.catalog.Scopes(),
+		"scopes_supported":                      scopes,
 		"bearer_methods_supported":              []string{"header"},
 		"resource_documentation":                o.publicBaseURL + "/health",
-		"resource_name":                         "mcp-edge",
+		"resource_name":                         resourceName,
 		"authorization_details_types_supported": []string{},
 	})
 }
@@ -204,13 +241,12 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "client registration requires POST")
 		return
 	}
-	if !o.requireOperatorToken(w, r) {
+	if !o.dcrEnabled && !o.requireOperatorToken(w, r) {
 		return
 	}
 
 	var req clientRegistrationRequest
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return
@@ -299,6 +335,17 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "at least one mcp:<service> scope is required")
 		return
 	}
+	resource, err := o.validateResourceIndicator(r, r.FormValue("scope"))
+	if err != nil {
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{
+			ActorSubjectSub: subject.Sub,
+			EventType:       "oauth.authorize.denied",
+			EventStatus:     "invalid_resource",
+		})
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", err.Error())
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), expectedResourceContextKey{}, resource))
 	if o.grants != nil {
 		allowed, err := o.grants.AllowedScopes(r.Context(), subject.Sub, r.FormValue("scope"))
 		if err != nil {
@@ -325,6 +372,9 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	clientInfo, err := o.stateStore.GetByID(r.Context(), r.FormValue("client_id"))
+	if err != nil && o.cimdEnabled {
+		clientInfo, err = o.registerClientMetadataDocument(r.Context(), r.FormValue("client_id"))
+	}
 	if err != nil {
 		o.recordAuditEvent(r.Context(), edgeAuditEvent{
 			ActorSubjectSub: subject.Sub,
@@ -381,6 +431,11 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "token exchange requires POST")
 		return
 	}
+	resource, err := o.validateTokenResourceIndicator(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", err.Error())
+		return
+	}
 	refreshClientID, err := o.prevalidateRefreshClient(r)
 	if err != nil {
 		o.logger.Warn().Err(err).Msg("refresh token client prevalidation failed")
@@ -390,6 +445,7 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 	if refreshClientID != "" {
 		r = r.WithContext(context.WithValue(r.Context(), refreshClientIDContextKey{}, refreshClientID))
 	}
+	r = r.WithContext(context.WithValue(r.Context(), expectedResourceContextKey{}, resource))
 	auditClientID := refreshClientID
 	if auditClientID == "" {
 		if clientID, _, err := resolveClientCredentials(r); err == nil {
@@ -411,6 +467,7 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 		Payload: map[string]any{
 			"client_id":  auditClientID,
 			"grant_type": r.FormValue("grant_type"),
+			"resource":   resource,
 		},
 	})
 }
@@ -465,6 +522,7 @@ func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) 
 		ClientID:  ti.GetClientID(),
 		Sub:       ti.GetUserID(),
 		Scope:     ti.GetScope(),
+		Resource:  tokenInfoResource(ti),
 		TokenType: "Bearer",
 		Iat:       ti.GetAccessCreateAt().Unix(),
 		Exp:       ti.GetAccessCreateAt().Add(ti.GetAccessExpiresIn()).Unix(),
@@ -528,6 +586,66 @@ func clientAllowsScope(clientInfo oauth2.ClientInfo, scope string) bool {
 	return scopeStringAllowed(scope, clientScopes.AllowedScopes())
 }
 
+func (o *OAuthService) validateResourceIndicator(r *http.Request, scope string) (string, error) {
+	if err := r.ParseForm(); err != nil {
+		return "", fmt.Errorf("unable to parse request parameters")
+	}
+	resources := r.Form["resource"]
+	if len(resources) != 1 || strings.TrimSpace(resources[0]) == "" {
+		return "", fmt.Errorf("exactly one resource indicator is required")
+	}
+	resource := strings.TrimRight(strings.TrimSpace(resources[0]), "/")
+	serviceID, err := singleServiceFromScope(scope)
+	if err != nil {
+		return "", err
+	}
+	service, ok := o.catalog.ServiceByID(serviceID)
+	if !ok {
+		return "", fmt.Errorf("requested resource scope is not supported")
+	}
+	expectedResource := o.publicBaseURL + service.PublicPath
+	if resource != expectedResource {
+		return "", fmt.Errorf("resource indicator must match the requested MCP service")
+	}
+	return expectedResource, nil
+}
+
+func (o *OAuthService) validateTokenResourceIndicator(r *http.Request) (string, error) {
+	if err := r.ParseForm(); err != nil {
+		return "", fmt.Errorf("unable to parse form body")
+	}
+	resources := r.Form["resource"]
+	if len(resources) != 1 || strings.TrimSpace(resources[0]) == "" {
+		return "", fmt.Errorf("exactly one resource indicator is required")
+	}
+	resource := strings.TrimRight(strings.TrimSpace(resources[0]), "/")
+	for _, scope := range o.catalog.Scopes() {
+		serviceID := strings.TrimPrefix(scope, "mcp:")
+		service, ok := o.catalog.ServiceByID(serviceID)
+		if ok && resource == o.publicBaseURL+service.PublicPath {
+			return resource, nil
+		}
+	}
+	return "", fmt.Errorf("resource indicator is not registered on this edge")
+}
+
+func singleServiceFromScope(scope string) (string, error) {
+	serviceID := ""
+	for _, scopeEntry := range strings.Fields(scope) {
+		if !strings.HasPrefix(scopeEntry, "mcp:") {
+			continue
+		}
+		if serviceID != "" {
+			return "", fmt.Errorf("exactly one mcp:<service> scope is required")
+		}
+		serviceID = strings.TrimPrefix(scopeEntry, "mcp:")
+	}
+	if serviceID == "" {
+		return "", fmt.Errorf("exactly one mcp:<service> scope is required")
+	}
+	return serviceID, nil
+}
+
 func normalizeClientRegistration(req clientRegistrationRequest, allowedScopes []string) (registeredClient, error) {
 	record := registeredClient{
 		Name:                    strings.TrimSpace(req.ClientName),
@@ -541,11 +659,13 @@ func normalizeClientRegistration(req clientRegistrationRequest, allowedScopes []
 	if record.Name == "" {
 		return registeredClient{}, fmt.Errorf("client_name is required")
 	}
-	if len(record.RedirectURIs) != 1 {
-		return registeredClient{}, fmt.Errorf("exactly one redirect URI is required")
+	if len(record.RedirectURIs) == 0 {
+		return registeredClient{}, fmt.Errorf("at least one redirect URI is required")
 	}
-	if !strings.Contains(record.RedirectURIs[0], "://") {
-		return registeredClient{}, fmt.Errorf("redirect URI must be absolute")
+	for _, redirectURI := range record.RedirectURIs {
+		if err := validateRedirectURI(redirectURI); err != nil {
+			return registeredClient{}, err
+		}
 	}
 
 	if len(record.GrantTypes) == 0 {
@@ -576,6 +696,127 @@ func normalizeClientRegistration(req clientRegistrationRequest, allowedScopes []
 	}
 
 	return record, nil
+}
+
+func validateRedirectURI(rawURI string) error {
+	parsed, err := url.Parse(rawURI)
+	if err != nil || !parsed.IsAbs() || strings.TrimSpace(parsed.Scheme) == "" {
+		return fmt.Errorf("redirect URI must be absolute")
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("redirect URI must not include a fragment")
+	}
+	switch parsed.Scheme {
+	case "https":
+		if parsed.Hostname() == "" {
+			return fmt.Errorf("https redirect URI must include a host")
+		}
+	case "http":
+		ip := net.ParseIP(parsed.Hostname())
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("http redirect URI is only allowed for loopback clients")
+		}
+	default:
+		return fmt.Errorf("redirect URI scheme must be https or loopback http")
+	}
+	return nil
+}
+
+func (o *OAuthService) registerClientMetadataDocument(ctx context.Context, clientID string) (oauth2.ClientInfo, error) {
+	clientID = strings.TrimSpace(clientID)
+	parsed, err := url.Parse(clientID)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, fmt.Errorf("client_id metadata document must be an HTTPS URL")
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := validateCIMDURL(requestCtx, parsed); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, clientID, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialPublicHTTPSHost,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("client metadata document returned status %d", resp.StatusCode)
+	}
+	var metadata clientRegistrationRequest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&metadata); err != nil {
+		return nil, fmt.Errorf("client metadata document must be valid JSON")
+	}
+	if metadata.ClientID != "" && metadata.ClientID != clientID {
+		return nil, fmt.Errorf("client metadata document client_id must match the requested client_id")
+	}
+	record, err := normalizeClientRegistration(metadata, o.catalog.Scopes())
+	if err != nil {
+		return nil, err
+	}
+	record.ID = clientID
+	record.TokenEndpointAuthMethod = tokenEndpointAuthMethodNone
+	record.CreatedAt = time.Now().UTC()
+	if err := o.stateStore.CreateClient(ctx, record, ""); err != nil {
+		return nil, err
+	}
+	return o.stateStore.GetByID(ctx, clientID)
+}
+
+func dialPublicHTTPSHost(ctx context.Context, network string, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if port != "443" {
+		return nil, fmt.Errorf("client metadata document must use default HTTPS port 443")
+	}
+	ips, err := resolvePublicCIMDHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+}
+
+func validateCIMDURL(ctx context.Context, parsed *url.URL) error {
+	if parsed == nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return fmt.Errorf("client_id metadata document must be an HTTPS URL")
+	}
+	if parsed.Port() != "" && parsed.Port() != "443" {
+		return fmt.Errorf("client metadata document must use default HTTPS port 443")
+	}
+	_, err := resolvePublicCIMDHost(ctx, parsed.Hostname())
+	return err
+}
+
+func resolvePublicCIMDHost(ctx context.Context, host string) ([]net.IPAddr, error) {
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve client metadata document host: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("client metadata document host did not resolve")
+	}
+	for _, resolved := range ips {
+		ip := resolved.IP
+		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+			return nil, fmt.Errorf("client metadata document host must resolve to public addresses only")
+		}
+	}
+	return ips, nil
 }
 
 func grantTypesAllowed(grantTypes []string) bool {

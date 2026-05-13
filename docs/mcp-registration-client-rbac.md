@@ -41,18 +41,24 @@ Use the edge OAuth metadata endpoints for discovery:
 
 - `GET https://<edge-domain>/`
 - `GET https://<edge-domain>/.well-known/oauth-authorization-server`
+- `GET https://<edge-domain>/.well-known/openid-configuration`
 - `GET https://<edge-domain>/.well-known/oauth-protected-resource`
+- `GET https://<edge-domain>/.well-known/oauth-protected-resource/<serviceID>`
 
 The root endpoint returns a small JSON index with service paths, scopes, health URLs, and OAuth endpoint links. MCP clients should still use the per-service MCP URLs, not `/`.
 
 Client setup flow:
 
-1. Register the client with `POST /oauth/register` using the edge operator bearer token.
+1. Register the client with `POST /oauth/register` using the edge operator bearer token, or enable public DCR with `MCP_EDGE_DCR_ENABLED=true` for unmanaged MCP clients.
 2. Store the returned `client_id` and optional `client_secret`.
 3. Start authorization-code + PKCE (`S256`) against `/oauth/authorize`.
-4. Request one or more service scopes, such as `mcp:mealie`.
-5. Exchange the authorization code at `/oauth/token`.
+4. Request exactly one service scope, such as `mcp:mealie`, and include the matching RFC 8707 `resource`, such as `https://<edge-domain>/mealie/mcp`.
+5. Exchange the authorization code at `/oauth/token` with the same `resource` value.
 6. Call the MCP service URL with `Authorization: Bearer <edge-issued-access-token>`.
+
+If `MCP_EDGE_CIMD_ENABLED=true`, the edge also accepts HTTPS Client ID Metadata Document URLs as `client_id` values and registers the public client metadata on first authorization.
+
+CORS is disabled unless `MCP_EDGE_CORS_ALLOWED_ORIGINS` is set. Use a comma-separated allowlist for browser-based clients, or `*` only when bearer-token exposure to any browser origin is acceptable for your deployment.
 
 Example dynamic client registration request:
 
@@ -66,8 +72,20 @@ curl -fsS https://<edge-domain>/oauth/register \
     "grant_types": ["authorization_code", "refresh_token"],
     "response_types": ["code"],
     "token_endpoint_auth_method": "none",
-    "scope": "mcp:mealie mcp:memory"
+    "scope": "mcp:mealie"
   }'
+```
+
+Example authorize URL parameters include:
+
+```text
+response_type=code
+client_id=<client-id>
+redirect_uri=<registered-redirect-uri>
+scope=mcp:mealie
+resource=https://<edge-domain>/mealie/mcp
+code_challenge=<S256-challenge>
+code_challenge_method=S256
 ```
 
 Example MCP client server entry after OAuth is complete:
@@ -88,6 +106,8 @@ Example MCP client server entry after OAuth is complete:
 Important client-auth facts:
 
 - The edge issues local opaque OAuth tokens for MCP service access.
+- Edge-issued tokens are bound to one canonical MCP resource URL and cannot be replayed across service paths.
+- Upgrading from pre-resource-binding releases requires clients to complete OAuth again; old tokens intentionally do not gain a compatibility fallback.
 - Authentik is used for browser login and group synchronization, but Authentik access JWTs are not accepted directly at MCP service paths.
 - The edge strips `Authorization` and `Cookie` before proxying to tenant MCP services.
 - Upstream MCP services do not receive end-user claims or Authentik tokens by default.
@@ -135,7 +155,9 @@ After deployment, verify public metadata and readiness:
 curl -fsS https://<edge-domain>/
 curl -fsS https://<edge-domain>/health/ready
 curl -fsS https://<edge-domain>/.well-known/oauth-authorization-server
+curl -fsS https://<edge-domain>/.well-known/openid-configuration
 curl -fsS https://<edge-domain>/.well-known/oauth-protected-resource
+curl -fsS https://<edge-domain>/.well-known/oauth-protected-resource/mealie
 ```
 
 For RBAC validation:

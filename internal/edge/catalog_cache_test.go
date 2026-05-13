@@ -89,6 +89,9 @@ func TestServerHandlerUsesRefreshedCatalogWithoutRebuild(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	require.Equal(t, http.StatusUnauthorized, res.Code)
 	require.Contains(t, res.Body.String(), "invalid_token")
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `scope="mcp:newservice"`)
+	require.Contains(t, res.Header().Get("WWW-Authenticate"), `resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/newservice"`)
 
 	store.entries = catalog.DefaultCatalogV1()
 	require.NoError(t, server.catalogCache.Refresh(context.Background()))
@@ -238,6 +241,42 @@ func TestReservedRoutesWinOverDynamicFallback(t *testing.T) {
 	require.Contains(t, res.Body.String(), "live")
 }
 
+func TestCORSPreflightAllowsMCPTransportHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest(http.MethodOptions, "/mealie/mcp", nil)
+	req.Header.Set("Origin", "https://client.example.com")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, mcp-protocol-version, mcp-session-id")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusNoContent, res.Code)
+	require.Equal(t, "*", res.Header().Get("Access-Control-Allow-Origin"))
+	require.Contains(t, res.Header().Get("Access-Control-Allow-Headers"), "MCP-Protocol-Version")
+	require.Contains(t, res.Header().Get("Access-Control-Allow-Headers"), "MCP-Session-Id")
+	require.Contains(t, res.Header().Get("Access-Control-Allow-Headers"), "Last-Event-ID")
+}
+
+func TestCORSPreflightDoesNotAllowUnconfiguredOrigin(t *testing.T) {
+	t.Parallel()
+
+	cfg := testEdgeConfig()
+	cfg.CORSAllowedOrigins = []string{"https://trusted.example.com"}
+	server, err := NewServer(cfg, zerolog.Nop(), staticResolver{})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodOptions, "/mealie/mcp", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusNoContent, res.Code)
+	require.Empty(t, res.Header().Get("Access-Control-Allow-Origin"))
+}
+
 type mutableCatalogStore struct {
 	*memoryEdgeStateStore
 	entries []catalog.ServiceCatalogEntry
@@ -263,6 +302,7 @@ func testEdgeConfig() Config {
 		PlatformEnv:           "test",
 		PublicBaseURL:         "https://mcp.example.com",
 		CookieSecure:          false,
+		CORSAllowedOrigins:    []string{"*"},
 		EnableFixtureMode:     true,
 		FixtureAuthSubjectSub: "fixture-user",
 		FixtureAuthGroups:     []string{"mcp-users", "mcp-service-mealie"},
