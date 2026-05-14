@@ -10,6 +10,7 @@ import (
 
 	"dragonserver/mcp-platform/internal/controlplane"
 	"dragonserver/mcp-platform/internal/domain"
+	"dragonserver/mcp-platform/internal/ids"
 	"dragonserver/mcp-platform/internal/platform/sqlite/platformdb"
 
 	"github.com/go-oauth2/oauth2/v4/models"
@@ -77,6 +78,139 @@ func TestSQLiteEdgeStateStoreRoundTrip(t *testing.T) {
 	require.False(t, confidential.VerifyPassword("wrong-secret"))
 	require.True(t, clientAllowsScope(clientInfo, "mcp:mealie"))
 	require.False(t, clientAllowsScope(clientInfo, "mcp:actualbudget"))
+	require.True(t, clientAllowsGrant(clientInfo, "authorization_code"))
+	require.False(t, clientAllowsGrant(clientInfo, "urn:ietf:params:oauth:grant-type:device_code"))
+
+	deviceID := ids.New()
+	require.ErrorContains(t, storeValue.CreateDeviceAuthorization(ctx, deviceAuthorization{}), "device authorization id is required")
+	require.NoError(t, storeValue.CreateDeviceAuthorization(ctx, deviceAuthorization{
+		ID:              deviceID,
+		ClientID:        client.ID,
+		ServiceID:       "mealie",
+		Resource:        "https://mcp.example.com/mealie/mcp",
+		Scope:           "mcp:mealie",
+		DeviceCodeHash:  hashOpaqueValue("sqlite-device-code"),
+		UserCodeHash:    hashOpaqueValue(normalizeUserCode("WXYZ-1234")),
+		UserCodeDisplay: "WXYZ-1234",
+		ExpiresAt:       now.Add(10 * time.Minute),
+		CreatedAt:       now,
+	}))
+	loadedDevice, ok, err := storeValue.GetDeviceAuthorizationByDeviceCode(ctx, "sqlite-device-code")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceAuthorizationStatusPending, loadedDevice.Status)
+	require.Equal(t, "WXYZ-1234", loadedDevice.UserCodeDisplay)
+	require.Equal(t, 5*time.Second, loadedDevice.Interval)
+	loadedDevice, ok, err = storeValue.GetDeviceAuthorizationByUserCode(ctx, "wxyz 1234")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceID, loadedDevice.ID)
+	updated, err := storeValue.ApproveDeviceAuthorization(ctx, deviceID, "", now.Add(time.Second))
+	require.ErrorContains(t, err, "requires subject")
+	require.False(t, updated)
+	updated, err = storeValue.UpdateDeviceAuthorizationPoll(ctx, deviceID, now.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, updated)
+	updated, err = storeValue.ApproveDeviceAuthorization(ctx, deviceID, claims.Sub, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, updated)
+	loadedDevice, ok, err = storeValue.GetDeviceAuthorizationByDeviceCode(ctx, "sqlite-device-code")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceAuthorizationStatusApproved, loadedDevice.Status)
+	require.NotNil(t, loadedDevice.SubjectSub)
+	require.Equal(t, claims.Sub, *loadedDevice.SubjectSub)
+	require.Equal(t, int64(1), loadedDevice.PollCount)
+	require.NotNil(t, loadedDevice.LastPollAt)
+	require.NotNil(t, loadedDevice.ApprovedAt)
+	updated, err = storeValue.ConsumeDeviceAuthorization(ctx, deviceID, now.Add(3*time.Second))
+	require.NoError(t, err)
+	require.True(t, updated)
+	loadedDevice, ok, err = storeValue.GetDeviceAuthorizationByDeviceCode(ctx, "sqlite-device-code")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceAuthorizationStatusConsumed, loadedDevice.Status)
+	require.NotNil(t, loadedDevice.ConsumedAt)
+
+	atomicDeviceID := ids.New()
+	require.NoError(t, storeValue.CreateDeviceAuthorization(ctx, deviceAuthorization{
+		ID:              atomicDeviceID,
+		ClientID:        client.ID,
+		ServiceID:       "mealie",
+		Resource:        "https://mcp.example.com/mealie/mcp",
+		Scope:           "mcp:mealie",
+		DeviceCodeHash:  hashOpaqueValue("sqlite-atomic-device-code"),
+		UserCodeHash:    hashOpaqueValue(normalizeUserCode("ATOM-1234")),
+		UserCodeDisplay: "ATOM-1234",
+		ExpiresAt:       now.Add(10 * time.Minute),
+		CreatedAt:       now,
+	}))
+	updated, err = storeValue.ApproveDeviceAuthorization(ctx, atomicDeviceID, claims.Sub, now.Add(4*time.Second))
+	require.NoError(t, err)
+	require.True(t, updated)
+
+	duplicateToken := models.NewToken()
+	duplicateToken.SetClientID(client.ID)
+	duplicateToken.SetUserID(claims.Sub)
+	duplicateToken.SetScope("mcp:mealie")
+	duplicateToken.SetAccess("duplicate-device-access")
+	duplicateToken.SetAccessCreateAt(now)
+	duplicateToken.SetAccessExpiresIn(time.Hour)
+	setTokenInfoResource(duplicateToken, "https://mcp.example.com/mealie/mcp")
+	require.NoError(t, storeValue.Create(ctx, duplicateToken))
+
+	deviceToken := models.NewToken()
+	deviceToken.SetClientID(client.ID)
+	deviceToken.SetUserID(claims.Sub)
+	deviceToken.SetScope("mcp:mealie")
+	deviceToken.SetAccess("duplicate-device-access")
+	deviceToken.SetAccessCreateAt(now)
+	deviceToken.SetAccessExpiresIn(time.Hour)
+	setTokenInfoResource(deviceToken, "https://mcp.example.com/mealie/mcp")
+	setTokenInfoIssuedVia(deviceToken, oauthGrantDeviceCode)
+	updated, err = storeValue.ConsumeDeviceAuthorizationAndCreateToken(ctx, atomicDeviceID, now.Add(5*time.Second), deviceToken)
+	require.Error(t, err)
+	require.False(t, updated)
+	loadedDevice, ok, err = storeValue.GetDeviceAuthorizationByDeviceCode(ctx, "sqlite-atomic-device-code")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceAuthorizationStatusApproved, loadedDevice.Status)
+
+	deviceToken.SetAccess("unique-device-access")
+	updated, err = storeValue.ConsumeDeviceAuthorizationAndCreateToken(ctx, atomicDeviceID, now.Add(6*time.Second), deviceToken)
+	require.NoError(t, err)
+	require.True(t, updated)
+	loadedDevice, ok, err = storeValue.GetDeviceAuthorizationByDeviceCode(ctx, "sqlite-atomic-device-code")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, deviceAuthorizationStatusConsumed, loadedDevice.Status)
+	loadedDeviceToken, err := storeValue.GetByAccess(ctx, "unique-device-access")
+	require.NoError(t, err)
+	require.Equal(t, oauthGrantDeviceCode, tokenInfoIssuedVia(loadedDeviceToken))
+
+	expiredID := ids.New()
+	require.NoError(t, storeValue.CreateDeviceAuthorization(ctx, deviceAuthorization{
+		ID:              expiredID,
+		ClientID:        client.ID,
+		ServiceID:       "mealie",
+		Resource:        "https://mcp.example.com/mealie/mcp",
+		Scope:           "mcp:mealie",
+		DeviceCodeHash:  hashOpaqueValue("sqlite-expired-device-code"),
+		UserCodeHash:    hashOpaqueValue(normalizeUserCode("EEEE-0000")),
+		UserCodeDisplay: "EEEE-0000",
+		Interval:        5 * time.Second,
+		ExpiresAt:       now.Add(-time.Second),
+		CreatedAt:       now.Add(-10 * time.Minute),
+	}))
+	expiredCount, err := storeValue.MarkExpiredDeviceAuthorizations(ctx, now)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), expiredCount)
+	updated, err = storeValue.ApproveDeviceAuthorization(ctx, expiredID, claims.Sub, now)
+	require.NoError(t, err)
+	require.False(t, updated)
+	prunedCount, err := storeValue.PruneExpiredDeviceAuthorizations(ctx, now.Add(time.Second))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), prunedCount)
 
 	token := models.NewToken()
 	token.SetClientID(client.ID)

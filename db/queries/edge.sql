@@ -3,13 +3,13 @@ INSERT INTO oauth_clients (client_id, client_name, created_by_subject_sub, redir
 VALUES (sqlc.arg(client_id), sqlc.arg(client_name), NULLIF(sqlc.arg(created_by_subject_sub), ''), sqlc.arg(redirect_uris), sqlc.arg(grant_types), sqlc.arg(response_types), sqlc.arg(scopes), sqlc.arg(token_endpoint_auth_method), sqlc.narg(client_secret_hash), '{}', sqlc.arg(created_at), sqlc.arg(created_at));
 
 -- name: GetOAuthClient :one
-SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+SELECT redirect_uris, grant_types, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 FROM oauth_clients
 WHERE client_id = sqlc.arg(client_id);
 
 -- name: UpsertOAuthSession :exec
-INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-VALUES (sqlc.arg(session_id), NULLIF(sqlc.arg(subject_sub), ''), sqlc.arg(client_id), NULLIF(sqlc.arg(service_id), ''), sqlc.arg(resource), sqlc.arg(redirect_uri), sqlc.arg(scope), NULLIF(sqlc.arg(code_challenge), ''), NULLIF(sqlc.arg(code_challenge_method), ''), sqlc.narg(authorization_code_hash), sqlc.arg(authorization_code_ciphertext), sqlc.narg(access_token_hash), sqlc.arg(access_token_ciphertext), sqlc.narg(refresh_token_hash), sqlc.arg(refresh_token_ciphertext), sqlc.narg(code_create_at), sqlc.arg(code_expires_in_seconds), sqlc.narg(access_create_at), sqlc.arg(access_expires_in_seconds), sqlc.narg(refresh_create_at), sqlc.arg(refresh_expires_in_seconds), sqlc.narg(expires_at), NULL, CURRENT_TIMESTAMP)
+INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason, consumed_at, updated_at)
+VALUES (sqlc.arg(session_id), NULLIF(sqlc.arg(subject_sub), ''), sqlc.arg(client_id), NULLIF(sqlc.arg(service_id), ''), sqlc.arg(resource), sqlc.arg(redirect_uri), sqlc.arg(scope), NULLIF(sqlc.arg(code_challenge), ''), NULLIF(sqlc.arg(code_challenge_method), ''), sqlc.narg(authorization_code_hash), sqlc.arg(authorization_code_ciphertext), sqlc.narg(access_token_hash), sqlc.arg(access_token_ciphertext), sqlc.narg(refresh_token_hash), sqlc.arg(refresh_token_ciphertext), sqlc.narg(code_create_at), sqlc.arg(code_expires_in_seconds), sqlc.narg(access_create_at), sqlc.arg(access_expires_in_seconds), sqlc.narg(refresh_create_at), sqlc.arg(refresh_expires_in_seconds), sqlc.narg(expires_at), sqlc.arg(issued_via), sqlc.narg(operator_reason), NULL, CURRENT_TIMESTAMP)
 ON CONFLICT(session_id) DO UPDATE SET
     subject_sub = excluded.subject_sub,
     client_id = excluded.client_id,
@@ -32,6 +32,8 @@ ON CONFLICT(session_id) DO UPDATE SET
     refresh_create_at = excluded.refresh_create_at,
     refresh_expires_in_seconds = excluded.refresh_expires_in_seconds,
     expires_at = excluded.expires_at,
+    issued_via = excluded.issued_via,
+    operator_reason = excluded.operator_reason,
     consumed_at = NULL,
     updated_at = CURRENT_TIMESTAMP;
 
@@ -44,18 +46,24 @@ DELETE FROM oauth_sessions WHERE access_token_hash = sqlc.arg(access_token_hash)
 -- name: DeleteOAuthSessionByRefreshHash :exec
 DELETE FROM oauth_sessions WHERE refresh_token_hash = sqlc.arg(refresh_token_hash);
 
+-- name: DeleteOperatorOAuthSessionByID :execrows
+DELETE FROM oauth_sessions
+WHERE session_id = sqlc.arg(session_id)
+  AND issued_via = 'operator'
+  AND client_id = sqlc.arg(client_id);
+
 -- name: GetOAuthSessionByAccessHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE access_token_hash = sqlc.arg(access_token_hash);
 
 -- name: GetOAuthSessionByRefreshHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE refresh_token_hash = sqlc.arg(refresh_token_hash);
 
 -- name: GetOAuthSessionByCodeHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE authorization_code_hash = sqlc.arg(authorization_code_hash) AND consumed_at IS NULL;
 
@@ -63,13 +71,147 @@ WHERE authorization_code_hash = sqlc.arg(authorization_code_hash) AND consumed_a
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE authorization_code_hash = sqlc.arg(authorization_code_hash) AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason;
 
 -- name: ConsumeOAuthSessionByRefreshHash :one
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE refresh_token_hash = sqlc.arg(refresh_token_hash) AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at;
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason;
+
+-- name: CreateDeviceAuthorization :exec
+INSERT INTO oauth_device_authorizations (
+    device_authorization_id,
+    client_id,
+    service_id,
+    resource,
+    scope,
+    device_code_hash,
+    user_code_hash,
+    user_code_display,
+    status,
+    interval_seconds,
+    expires_at,
+    created_at,
+    updated_at
+)
+VALUES (
+    sqlc.arg(device_authorization_id),
+    sqlc.arg(client_id),
+    sqlc.arg(service_id),
+    sqlc.arg(resource),
+    sqlc.arg(scope),
+    sqlc.arg(device_code_hash),
+    sqlc.arg(user_code_hash),
+    sqlc.arg(user_code_display),
+    'pending',
+    sqlc.arg(interval_seconds),
+    sqlc.arg(expires_at),
+    sqlc.arg(created_at),
+    sqlc.arg(created_at)
+);
+
+-- name: GetDeviceAuthorizationByDeviceCodeHash :one
+SELECT device_authorization_id,
+       client_id,
+       subject_sub,
+       service_id,
+       resource,
+       scope,
+       device_code_hash,
+       user_code_hash,
+       user_code_display,
+       status,
+       interval_seconds,
+       last_poll_at,
+       poll_count,
+       approved_at,
+       denied_at,
+       expires_at,
+       consumed_at,
+       created_at,
+       updated_at
+FROM oauth_device_authorizations
+WHERE device_code_hash = sqlc.arg(device_code_hash);
+
+-- name: GetDeviceAuthorizationByUserCodeHash :one
+SELECT device_authorization_id,
+       client_id,
+       subject_sub,
+       service_id,
+       resource,
+       scope,
+       device_code_hash,
+       user_code_hash,
+       user_code_display,
+       status,
+       interval_seconds,
+       last_poll_at,
+       poll_count,
+       approved_at,
+       denied_at,
+       expires_at,
+       consumed_at,
+       created_at,
+       updated_at
+FROM oauth_device_authorizations
+WHERE user_code_hash = sqlc.arg(user_code_hash);
+
+-- name: ApproveDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET subject_sub = sqlc.arg(subject_sub),
+    status = 'approved',
+    approved_at = sqlc.arg(approved_at),
+    updated_at = sqlc.arg(approved_at)
+WHERE device_authorization_id = sqlc.arg(device_authorization_id)
+  AND status = 'pending'
+  AND expires_at > sqlc.arg(now);
+
+-- name: DenyDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET status = 'denied',
+    denied_at = sqlc.arg(denied_at),
+    updated_at = sqlc.arg(denied_at)
+WHERE device_authorization_id = sqlc.arg(device_authorization_id)
+  AND status = 'pending'
+  AND expires_at > sqlc.arg(now);
+
+-- name: ConsumeDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET status = 'consumed',
+    consumed_at = sqlc.arg(consumed_at),
+    updated_at = sqlc.arg(consumed_at)
+WHERE device_authorization_id = sqlc.arg(device_authorization_id)
+  AND status = 'approved'
+  AND subject_sub IS NOT NULL
+  AND expires_at > sqlc.arg(now);
+
+-- name: UpdateDeviceAuthorizationPoll :execrows
+UPDATE oauth_device_authorizations
+SET last_poll_at = sqlc.arg(last_poll_at),
+    poll_count = poll_count + 1,
+    updated_at = sqlc.arg(last_poll_at)
+WHERE device_authorization_id = sqlc.arg(device_authorization_id);
+
+-- name: SlowDownDeviceAuthorizationPoll :execrows
+UPDATE oauth_device_authorizations
+SET last_poll_at = sqlc.arg(last_poll_at),
+    poll_count = poll_count + 1,
+    interval_seconds = interval_seconds + sqlc.arg(increment_seconds),
+    updated_at = sqlc.arg(last_poll_at)
+WHERE device_authorization_id = sqlc.arg(device_authorization_id);
+
+-- name: MarkExpiredDeviceAuthorizations :execrows
+UPDATE oauth_device_authorizations
+SET status = 'expired',
+    updated_at = sqlc.arg(now)
+WHERE status IN ('pending', 'approved')
+  AND expires_at <= sqlc.arg(now);
+
+-- name: PruneExpiredDeviceAuthorizations :execrows
+DELETE FROM oauth_device_authorizations
+WHERE status IN ('expired', 'denied', 'consumed')
+  AND updated_at <= sqlc.arg(cutoff);
 
 -- name: PutPendingLogin :exec
 INSERT INTO edge_pending_logins (state, return_to, nonce, expires_at, updated_at)

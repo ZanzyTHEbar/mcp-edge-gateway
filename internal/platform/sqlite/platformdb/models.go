@@ -8,6 +8,28 @@ import (
 	"database/sql"
 )
 
+type OauthDeviceAuthorization struct {
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+	ClientID              string         `db:"client_id" json:"client_id"`
+	SubjectSub            sql.NullString `db:"subject_sub" json:"subject_sub"`
+	ServiceID             string         `db:"service_id" json:"service_id"`
+	Resource              string         `db:"resource" json:"resource"`
+	Scope                 string         `db:"scope" json:"scope"`
+	DeviceCodeHash        string         `db:"device_code_hash" json:"device_code_hash"`
+	UserCodeHash          string         `db:"user_code_hash" json:"user_code_hash"`
+	UserCodeDisplay       string         `db:"user_code_display" json:"user_code_display"`
+	Status                string         `db:"status" json:"status"`
+	IntervalSeconds       int64          `db:"interval_seconds" json:"interval_seconds"`
+	LastPollAt            sql.NullString `db:"last_poll_at" json:"last_poll_at"`
+	PollCount             int64          `db:"poll_count" json:"poll_count"`
+	ApprovedAt            sql.NullString `db:"approved_at" json:"approved_at"`
+	DeniedAt              sql.NullString `db:"denied_at" json:"denied_at"`
+	ExpiresAt             string         `db:"expires_at" json:"expires_at"`
+	ConsumedAt            sql.NullString `db:"consumed_at" json:"consumed_at"`
+	CreatedAt             string         `db:"created_at" json:"created_at"`
+	UpdatedAt             string         `db:"updated_at" json:"updated_at"`
+}
+
 type TenantInstance struct {
 	TenantID             []byte         `db:"tenant_id" json:"tenant_id"`
 	SubjectSub           string         `db:"subject_sub" json:"subject_sub"`

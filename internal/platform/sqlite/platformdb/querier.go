@@ -42,19 +42,41 @@ type Querier interface {
 	//        AND service_catalog.enabled = 1
 	//  ) AS allowed
 	AllowedServiceGrant(ctx context.Context, arg AllowedServiceGrantParams) (int64, error)
+	//ApproveDeviceAuthorization
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET subject_sub = ?1,
+	//      status = 'approved',
+	//      approved_at = ?2,
+	//      updated_at = ?2
+	//  WHERE device_authorization_id = ?3
+	//    AND status = 'pending'
+	//    AND expires_at > ?4
+	ApproveDeviceAuthorization(ctx context.Context, arg ApproveDeviceAuthorizationParams) (int64, error)
+	//ConsumeDeviceAuthorization
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET status = 'consumed',
+	//      consumed_at = ?1,
+	//      updated_at = ?1
+	//  WHERE device_authorization_id = ?2
+	//    AND status = 'approved'
+	//    AND subject_sub IS NOT NULL
+	//    AND expires_at > ?3
+	ConsumeDeviceAuthorization(ctx context.Context, arg ConsumeDeviceAuthorizationParams) (int64, error)
 	//ConsumeOAuthSessionByCodeHash
 	//
 	//  UPDATE oauth_sessions
 	//  SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 	//  WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
-	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 	ConsumeOAuthSessionByCodeHash(ctx context.Context, arg ConsumeOAuthSessionByCodeHashParams) (ConsumeOAuthSessionByCodeHashRow, error)
 	//ConsumeOAuthSessionByRefreshHash
 	//
 	//  UPDATE oauth_sessions
 	//  SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 	//  WHERE refresh_token_hash = ?1 AND consumed_at IS NULL
-	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 	ConsumeOAuthSessionByRefreshHash(ctx context.Context, arg ConsumeOAuthSessionByRefreshHashParams) (ConsumeOAuthSessionByRefreshHashRow, error)
 	//CountAllowedServiceGrants
 	//
@@ -80,6 +102,39 @@ type Querier interface {
 	//    AND service_grants.service_id = ?2
 	//    AND service_catalog.enabled = 1
 	CountSubjectServiceGrant(ctx context.Context, arg CountSubjectServiceGrantParams) (int64, error)
+	//CreateDeviceAuthorization
+	//
+	//  INSERT INTO oauth_device_authorizations (
+	//      device_authorization_id,
+	//      client_id,
+	//      service_id,
+	//      resource,
+	//      scope,
+	//      device_code_hash,
+	//      user_code_hash,
+	//      user_code_display,
+	//      status,
+	//      interval_seconds,
+	//      expires_at,
+	//      created_at,
+	//      updated_at
+	//  )
+	//  VALUES (
+	//      ?1,
+	//      ?2,
+	//      ?3,
+	//      ?4,
+	//      ?5,
+	//      ?6,
+	//      ?7,
+	//      ?8,
+	//      'pending',
+	//      ?9,
+	//      ?10,
+	//      ?11,
+	//      ?11
+	//  )
+	CreateDeviceAuthorization(ctx context.Context, arg CreateDeviceAuthorizationParams) error
 	//CreateOAuthClient
 	//
 	//  INSERT INTO oauth_clients (client_id, client_name, created_by_subject_sub, redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, client_secret_hash, metadata, created_at, updated_at)
@@ -112,6 +167,13 @@ type Querier interface {
 	//
 	//  DELETE FROM oauth_sessions WHERE refresh_token_hash = ?1
 	DeleteOAuthSessionByRefreshHash(ctx context.Context, arg DeleteOAuthSessionByRefreshHashParams) error
+	//DeleteOperatorOAuthSessionByID
+	//
+	//  DELETE FROM oauth_sessions
+	//  WHERE session_id = ?1
+	//    AND issued_via = 'operator'
+	//    AND client_id = ?2
+	DeleteOperatorOAuthSessionByID(ctx context.Context, arg DeleteOperatorOAuthSessionByIDParams) (int64, error)
 	//DeletePendingLogin
 	//
 	//  DELETE FROM edge_pending_logins WHERE state = ?1
@@ -140,6 +202,16 @@ type Querier interface {
 	//
 	//  DELETE FROM tenant_instances WHERE tenant_id = ?1
 	DeleteTenantInstance(ctx context.Context, arg DeleteTenantInstanceParams) error
+	//DenyDeviceAuthorization
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET status = 'denied',
+	//      denied_at = ?1,
+	//      updated_at = ?1
+	//  WHERE device_authorization_id = ?2
+	//    AND status = 'pending'
+	//    AND expires_at > ?3
+	DenyDeviceAuthorization(ctx context.Context, arg DenyDeviceAuthorizationParams) (int64, error)
 	//DisableServiceCatalogEntriesNotIn
 	//
 	//  UPDATE service_catalog
@@ -185,6 +257,54 @@ type Querier interface {
 	//  FROM edge_browser_sessions
 	//  WHERE session_id = ?1
 	GetBrowserSession(ctx context.Context, arg GetBrowserSessionParams) (GetBrowserSessionRow, error)
+	//GetDeviceAuthorizationByDeviceCodeHash
+	//
+	//  SELECT device_authorization_id,
+	//         client_id,
+	//         subject_sub,
+	//         service_id,
+	//         resource,
+	//         scope,
+	//         device_code_hash,
+	//         user_code_hash,
+	//         user_code_display,
+	//         status,
+	//         interval_seconds,
+	//         last_poll_at,
+	//         poll_count,
+	//         approved_at,
+	//         denied_at,
+	//         expires_at,
+	//         consumed_at,
+	//         created_at,
+	//         updated_at
+	//  FROM oauth_device_authorizations
+	//  WHERE device_code_hash = ?1
+	GetDeviceAuthorizationByDeviceCodeHash(ctx context.Context, arg GetDeviceAuthorizationByDeviceCodeHashParams) (OauthDeviceAuthorization, error)
+	//GetDeviceAuthorizationByUserCodeHash
+	//
+	//  SELECT device_authorization_id,
+	//         client_id,
+	//         subject_sub,
+	//         service_id,
+	//         resource,
+	//         scope,
+	//         device_code_hash,
+	//         user_code_hash,
+	//         user_code_display,
+	//         status,
+	//         interval_seconds,
+	//         last_poll_at,
+	//         poll_count,
+	//         approved_at,
+	//         denied_at,
+	//         expires_at,
+	//         consumed_at,
+	//         created_at,
+	//         updated_at
+	//  FROM oauth_device_authorizations
+	//  WHERE user_code_hash = ?1
+	GetDeviceAuthorizationByUserCodeHash(ctx context.Context, arg GetDeviceAuthorizationByUserCodeHashParams) (OauthDeviceAuthorization, error)
 	//GetEnabledServiceCatalogEntry
 	//
 	//  SELECT service_id,
@@ -210,25 +330,25 @@ type Querier interface {
 	GetEnabledServiceCatalogEntry(ctx context.Context, arg GetEnabledServiceCatalogEntryParams) (GetEnabledServiceCatalogEntryRow, error)
 	//GetOAuthClient
 	//
-	//  SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+	//  SELECT redirect_uris, grant_types, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 	//  FROM oauth_clients
 	//  WHERE client_id = ?1
 	GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) (GetOAuthClientRow, error)
 	//GetOAuthSessionByAccessHash
 	//
-	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 	//  FROM oauth_sessions
 	//  WHERE access_token_hash = ?1
 	GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthSessionByAccessHashParams) (GetOAuthSessionByAccessHashRow, error)
 	//GetOAuthSessionByCodeHash
 	//
-	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 	//  FROM oauth_sessions
 	//  WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
 	GetOAuthSessionByCodeHash(ctx context.Context, arg GetOAuthSessionByCodeHashParams) (GetOAuthSessionByCodeHashRow, error)
 	//GetOAuthSessionByRefreshHash
 	//
-	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+	//  SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 	//  FROM oauth_sessions
 	//  WHERE refresh_token_hash = ?1
 	GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuthSessionByRefreshHashParams) (GetOAuthSessionByRefreshHashRow, error)
@@ -417,6 +537,14 @@ type Querier interface {
 	//  FROM tenant_instances
 	//  ORDER BY service_id, subject_sub
 	ListTenantInstances(ctx context.Context) ([]TenantInstance, error)
+	//MarkExpiredDeviceAuthorizations
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET status = 'expired',
+	//      updated_at = ?1
+	//  WHERE status IN ('pending', 'approved')
+	//    AND expires_at <= ?1
+	MarkExpiredDeviceAuthorizations(ctx context.Context, arg MarkExpiredDeviceAuthorizationsParams) (int64, error)
 	//MarkTenantDesiredDeleted
 	//
 	//  UPDATE tenant_instances
@@ -432,6 +560,12 @@ type Querier interface {
 	//      updated_at = CURRENT_TIMESTAMP
 	//  WHERE tenant_id = ?3
 	MarkTenantReconciled(ctx context.Context, arg MarkTenantReconciledParams) error
+	//PruneExpiredDeviceAuthorizations
+	//
+	//  DELETE FROM oauth_device_authorizations
+	//  WHERE status IN ('expired', 'denied', 'consumed')
+	//    AND updated_at <= ?1
+	PruneExpiredDeviceAuthorizations(ctx context.Context, arg PruneExpiredDeviceAuthorizationsParams) (int64, error)
 	//PutBrowserSession
 	//
 	//  INSERT INTO edge_browser_sessions (session_id, subject_sub, claims, expires_at, updated_at)
@@ -454,6 +588,23 @@ type Querier interface {
 	//  WHERE lease_name = ?1
 	//      AND holder_id = ?2
 	ReleaseControlPlaneLease(ctx context.Context, arg ReleaseControlPlaneLeaseParams) error
+	//SlowDownDeviceAuthorizationPoll
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET last_poll_at = ?1,
+	//      poll_count = poll_count + 1,
+	//      interval_seconds = interval_seconds + ?2,
+	//      updated_at = ?1
+	//  WHERE device_authorization_id = ?3
+	SlowDownDeviceAuthorizationPoll(ctx context.Context, arg SlowDownDeviceAuthorizationPollParams) (int64, error)
+	//UpdateDeviceAuthorizationPoll
+	//
+	//  UPDATE oauth_device_authorizations
+	//  SET last_poll_at = ?1,
+	//      poll_count = poll_count + 1,
+	//      updated_at = ?1
+	//  WHERE device_authorization_id = ?2
+	UpdateDeviceAuthorizationPoll(ctx context.Context, arg UpdateDeviceAuthorizationPollParams) (int64, error)
 	//UpdateTenantRuntimeStatus
 	//
 	//  UPDATE tenant_instances
@@ -476,8 +627,8 @@ type Querier interface {
 	UpsertManualServiceGrantSource(ctx context.Context, arg UpsertManualServiceGrantSourceParams) error
 	//UpsertOAuthSession
 	//
-	//  INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-	//  VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, CURRENT_TIMESTAMP)
+	//  INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason, consumed_at, updated_at)
+	//  VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, NULL, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(session_id) DO UPDATE SET
 	//      subject_sub = excluded.subject_sub,
 	//      client_id = excluded.client_id,
@@ -500,6 +651,8 @@ type Querier interface {
 	//      refresh_create_at = excluded.refresh_create_at,
 	//      refresh_expires_in_seconds = excluded.refresh_expires_in_seconds,
 	//      expires_at = excluded.expires_at,
+	//      issued_via = excluded.issued_via,
+	//      operator_reason = excluded.operator_reason,
 	//      consumed_at = NULL,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertOAuthSession(ctx context.Context, arg UpsertOAuthSessionParams) error

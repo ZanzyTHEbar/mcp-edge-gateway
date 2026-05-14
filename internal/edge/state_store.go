@@ -33,6 +33,19 @@ import (
 const (
 	tokenSessionIDExtensionKey = "sid"
 	tokenResourceExtensionKey  = "resource"
+	tokenIssuedViaExtensionKey = "issued_via"
+	tokenOperatorReasonKey     = "operator_reason"
+
+	oauthSessionIssuedViaOAuth    = "oauth"
+	oauthSessionIssuedViaOperator = "operator"
+)
+
+const (
+	deviceAuthorizationStatusPending  = "pending"
+	deviceAuthorizationStatusApproved = "approved"
+	deviceAuthorizationStatusDenied   = "denied"
+	deviceAuthorizationStatusExpired  = "expired"
+	deviceAuthorizationStatusConsumed = "consumed"
 )
 
 type edgeStateStore interface {
@@ -41,6 +54,18 @@ type edgeStateStore interface {
 	GrantAuthorizer
 
 	CreateClient(context.Context, registeredClient, string) error
+	CreateDeviceAuthorization(context.Context, deviceAuthorization) error
+	GetDeviceAuthorizationByDeviceCode(context.Context, string) (deviceAuthorization, bool, error)
+	GetDeviceAuthorizationByUserCode(context.Context, string) (deviceAuthorization, bool, error)
+	ApproveDeviceAuthorization(context.Context, ids.UUID, string, time.Time) (bool, error)
+	DenyDeviceAuthorization(context.Context, ids.UUID, time.Time) (bool, error)
+	ConsumeDeviceAuthorization(context.Context, ids.UUID, time.Time) (bool, error)
+	ConsumeDeviceAuthorizationAndCreateToken(context.Context, ids.UUID, time.Time, oauth2.TokenInfo) (bool, error)
+	UpdateDeviceAuthorizationPoll(context.Context, ids.UUID, time.Time) (bool, error)
+	SlowDownDeviceAuthorizationPoll(context.Context, ids.UUID, time.Time, time.Duration) (bool, error)
+	MarkExpiredDeviceAuthorizations(context.Context, time.Time) (int64, error)
+	PruneExpiredDeviceAuthorizations(context.Context, time.Time) (int64, error)
+	DeleteOperatorOAuthSessionByID(context.Context, ids.UUID, string) (bool, error)
 	PutPendingLogin(context.Context, pendingLogin) error
 	GetPendingLogin(context.Context, string, time.Time) (pendingLogin, bool, error)
 	DeletePendingLogin(context.Context, string) error
@@ -66,11 +91,15 @@ type memoryEdgeStateStore struct {
 	clientStore oauth2.ClientStore
 	tokenStore  oauth2.TokenStore
 
-	mu            sync.RWMutex
-	pendingLogins map[string]pendingLogin
-	sessions      map[string]browserSession
-	subjects      map[string]IdentityClaims
-	auditEvents   []edgeAuditEvent
+	mu                        sync.RWMutex
+	pendingLogins             map[string]pendingLogin
+	sessions                  map[string]browserSession
+	subjects                  map[string]IdentityClaims
+	deviceAuthorizationsByID  map[string]deviceAuthorization
+	deviceAuthorizationByCode map[string]string
+	deviceAuthorizationByUser map[string]string
+	oauthSessionsByID         map[string]oauthSessionTokens
+	auditEvents               []edgeAuditEvent
 }
 
 type sqliteEdgeStateStore struct {
@@ -87,10 +116,15 @@ type confidentialClient struct {
 	secret     string
 	secretHash string
 	scopes     []string
+	grantTypes []string
 }
 
 type scopedClient interface {
 	AllowedScopes() []string
+}
+
+type grantTypedClient interface {
+	AllowedGrantTypes() []string
 }
 
 type oauthSessionRecord struct {
@@ -116,6 +150,38 @@ type oauthSessionRecord struct {
 	RefreshCreateAt             *time.Time
 	RefreshExpiresInSeconds     int64
 	ExpiresAt                   *time.Time
+	IssuedVia                   string
+	OperatorReason              *string
+}
+
+type deviceAuthorization struct {
+	ID              ids.UUID
+	ClientID        string
+	SubjectSub      *string
+	ServiceID       string
+	Resource        string
+	Scope           string
+	DeviceCodeHash  string
+	UserCodeHash    string
+	UserCodeDisplay string
+	Status          string
+	Interval        time.Duration
+	LastPollAt      *time.Time
+	PollCount       int64
+	ApprovedAt      *time.Time
+	DeniedAt        *time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type oauthSessionTokens struct {
+	ClientID  string
+	IssuedVia string
+	Access    string
+	Refresh   string
+	Code      string
 }
 
 type opaqueCipher struct {
@@ -138,12 +204,16 @@ func newMemoryEdgeStateStore() (*memoryEdgeStateStore, error) {
 		return nil, err
 	}
 	return &memoryEdgeStateStore{
-		clientStore:   oauth2store.NewClientStore(),
-		tokenStore:    tokenStore,
-		pendingLogins: make(map[string]pendingLogin),
-		sessions:      make(map[string]browserSession),
-		subjects:      make(map[string]IdentityClaims),
-		auditEvents:   make([]edgeAuditEvent, 0),
+		clientStore:               oauth2store.NewClientStore(),
+		tokenStore:                tokenStore,
+		pendingLogins:             make(map[string]pendingLogin),
+		sessions:                  make(map[string]browserSession),
+		subjects:                  make(map[string]IdentityClaims),
+		deviceAuthorizationsByID:  make(map[string]deviceAuthorization),
+		deviceAuthorizationByCode: make(map[string]string),
+		deviceAuthorizationByUser: make(map[string]string),
+		oauthSessionsByID:         make(map[string]oauthSessionTokens),
+		auditEvents:               make([]edgeAuditEvent, 0),
 	}, nil
 }
 
@@ -188,11 +258,12 @@ func (s *memoryEdgeStateStore) CreateClient(ctx context.Context, record register
 		Public: record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone,
 	}
 	clientInfo := confidentialClient{
-		id:     client.ID,
-		domain: client.Domain,
-		secret: client.Secret,
-		userID: client.UserID,
-		scopes: slices.Clone(record.Scopes),
+		id:         client.ID,
+		domain:     client.Domain,
+		secret:     client.Secret,
+		userID:     client.UserID,
+		scopes:     slices.Clone(record.Scopes),
+		grantTypes: slices.Clone(record.GrantTypes),
 	}
 	if client.Public {
 		clientInfo.secret = ""
@@ -208,19 +279,233 @@ func (s *memoryEdgeStateStore) GetByID(ctx context.Context, id string) (oauth2.C
 }
 
 func (s *memoryEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo) error {
+	sessionID := tokenInfoSessionID(info)
+	if sessionID == "" {
+		sessionID = ids.New().String()
+		setTokenInfoSessionID(info, sessionID)
+	}
+	if tokenInfoIssuedVia(info) == "" {
+		setTokenInfoIssuedVia(info, oauthSessionIssuedViaOAuth)
+	}
+	s.mu.Lock()
+	s.oauthSessionsByID[sessionID] = oauthSessionTokens{ClientID: info.GetClientID(), IssuedVia: tokenInfoIssuedVia(info), Access: info.GetAccess(), Refresh: info.GetRefresh(), Code: info.GetCode()}
+	s.mu.Unlock()
 	return s.tokenStore.Create(ctx, info)
 }
 
+func (s *memoryEdgeStateStore) CreateDeviceAuthorization(_ context.Context, record deviceAuthorization) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record.ID.IsZero() {
+		return fmt.Errorf("device authorization id is required")
+	}
+	if record.Status == "" {
+		record.Status = deviceAuthorizationStatusPending
+	}
+	if record.Interval <= 0 {
+		record.Interval = 5 * time.Second
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	s.deviceAuthorizationsByID[record.ID.String()] = record
+	s.deviceAuthorizationByCode[record.DeviceCodeHash] = record.ID.String()
+	s.deviceAuthorizationByUser[record.UserCodeHash] = record.ID.String()
+	return nil
+}
+
+func (s *memoryEdgeStateStore) GetDeviceAuthorizationByDeviceCode(_ context.Context, deviceCode string) (deviceAuthorization, bool, error) {
+	return s.getDeviceAuthorizationByHash(hashOpaqueValue(deviceCode), true)
+}
+
+func (s *memoryEdgeStateStore) GetDeviceAuthorizationByUserCode(_ context.Context, userCode string) (deviceAuthorization, bool, error) {
+	return s.getDeviceAuthorizationByHash(hashOpaqueValue(normalizeUserCode(userCode)), false)
+}
+
+func (s *memoryEdgeStateStore) getDeviceAuthorizationByHash(hash string, deviceCode bool) (deviceAuthorization, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	index := s.deviceAuthorizationByUser
+	if deviceCode {
+		index = s.deviceAuthorizationByCode
+	}
+	id, ok := index[hash]
+	if !ok {
+		return deviceAuthorization{}, false, nil
+	}
+	record, ok := s.deviceAuthorizationsByID[id]
+	return record, ok, nil
+}
+
+func (s *memoryEdgeStateStore) ApproveDeviceAuthorization(_ context.Context, id ids.UUID, subjectSub string, approvedAt time.Time) (bool, error) {
+	if strings.TrimSpace(subjectSub) == "" {
+		return false, fmt.Errorf("device authorization approval requires subject")
+	}
+	return s.updateDeviceAuthorization(id, approvedAt, func(record *deviceAuthorization) bool {
+		if record.Status != deviceAuthorizationStatusPending || !approvedAt.Before(record.ExpiresAt) {
+			return false
+		}
+		record.SubjectSub = nullableString(subjectSub)
+		record.Status = deviceAuthorizationStatusApproved
+		record.ApprovedAt = &approvedAt
+		return true
+	})
+}
+
+func (s *memoryEdgeStateStore) DenyDeviceAuthorization(_ context.Context, id ids.UUID, deniedAt time.Time) (bool, error) {
+	return s.updateDeviceAuthorization(id, deniedAt, func(record *deviceAuthorization) bool {
+		if record.Status != deviceAuthorizationStatusPending || !deniedAt.Before(record.ExpiresAt) {
+			return false
+		}
+		record.Status = deviceAuthorizationStatusDenied
+		record.DeniedAt = &deniedAt
+		return true
+	})
+}
+
+func (s *memoryEdgeStateStore) ConsumeDeviceAuthorization(_ context.Context, id ids.UUID, consumedAt time.Time) (bool, error) {
+	return s.updateDeviceAuthorization(id, consumedAt, func(record *deviceAuthorization) bool {
+		if record.Status != deviceAuthorizationStatusApproved || record.SubjectSub == nil || strings.TrimSpace(*record.SubjectSub) == "" || !consumedAt.Before(record.ExpiresAt) {
+			return false
+		}
+		record.Status = deviceAuthorizationStatusConsumed
+		record.ConsumedAt = &consumedAt
+		return true
+	})
+}
+
+func (s *memoryEdgeStateStore) ConsumeDeviceAuthorizationAndCreateToken(ctx context.Context, id ids.UUID, consumedAt time.Time, info oauth2.TokenInfo) (bool, error) {
+	if err := s.Create(ctx, info); err != nil {
+		return false, err
+	}
+	consumed, err := s.ConsumeDeviceAuthorization(ctx, id, consumedAt)
+	if err != nil || consumed {
+		return consumed, err
+	}
+	_ = s.RemoveByAccess(ctx, info.GetAccess())
+	_ = s.RemoveByRefresh(ctx, info.GetRefresh())
+	_ = s.RemoveByCode(ctx, info.GetCode())
+	return false, nil
+}
+
+func (s *memoryEdgeStateStore) UpdateDeviceAuthorizationPoll(_ context.Context, id ids.UUID, polledAt time.Time) (bool, error) {
+	return s.updateDeviceAuthorization(id, polledAt, func(record *deviceAuthorization) bool {
+		record.LastPollAt = &polledAt
+		record.PollCount++
+		return true
+	})
+}
+
+func (s *memoryEdgeStateStore) SlowDownDeviceAuthorizationPoll(_ context.Context, id ids.UUID, polledAt time.Time, increment time.Duration) (bool, error) {
+	return s.updateDeviceAuthorization(id, polledAt, func(record *deviceAuthorization) bool {
+		record.LastPollAt = &polledAt
+		record.PollCount++
+		record.Interval += increment
+		return true
+	})
+}
+
+func (s *memoryEdgeStateStore) MarkExpiredDeviceAuthorizations(_ context.Context, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var updated int64
+	for id, record := range s.deviceAuthorizationsByID {
+		if (record.Status == deviceAuthorizationStatusPending || record.Status == deviceAuthorizationStatusApproved) && !now.Before(record.ExpiresAt) {
+			record.Status = deviceAuthorizationStatusExpired
+			record.UpdatedAt = now
+			s.deviceAuthorizationsByID[id] = record
+			updated++
+		}
+	}
+	return updated, nil
+}
+
+func (s *memoryEdgeStateStore) PruneExpiredDeviceAuthorizations(_ context.Context, cutoff time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for id, record := range s.deviceAuthorizationsByID {
+		if slices.Contains([]string{deviceAuthorizationStatusExpired, deviceAuthorizationStatusDenied, deviceAuthorizationStatusConsumed}, record.Status) && !record.UpdatedAt.After(cutoff) {
+			delete(s.deviceAuthorizationsByID, id)
+			delete(s.deviceAuthorizationByCode, record.DeviceCodeHash)
+			delete(s.deviceAuthorizationByUser, record.UserCodeHash)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+func (s *memoryEdgeStateStore) updateDeviceAuthorization(id ids.UUID, updatedAt time.Time, mutate func(*deviceAuthorization) bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.deviceAuthorizationsByID[id.String()]
+	if !ok {
+		return false, nil
+	}
+	if !mutate(&record) {
+		return false, nil
+	}
+	record.UpdatedAt = updatedAt
+	s.deviceAuthorizationsByID[id.String()] = record
+	return true, nil
+}
+
 func (s *memoryEdgeStateStore) RemoveByCode(ctx context.Context, code string) error {
+	s.removeOAuthSessionByToken(ctx, "code", code)
 	return s.tokenStore.RemoveByCode(ctx, code)
 }
 
 func (s *memoryEdgeStateStore) RemoveByAccess(ctx context.Context, access string) error {
+	s.removeOAuthSessionByToken(ctx, "access", access)
 	return s.tokenStore.RemoveByAccess(ctx, access)
 }
 
 func (s *memoryEdgeStateStore) RemoveByRefresh(ctx context.Context, refresh string) error {
+	s.removeOAuthSessionByToken(ctx, "refresh", refresh)
 	return s.tokenStore.RemoveByRefresh(ctx, refresh)
+}
+
+func (s *memoryEdgeStateStore) DeleteOperatorOAuthSessionByID(ctx context.Context, id ids.UUID, clientID string) (bool, error) {
+	s.mu.Lock()
+	tokens, ok := s.oauthSessionsByID[id.String()]
+	if ok && (tokens.IssuedVia != oauthSessionIssuedViaOperator || tokens.ClientID != clientID) {
+		s.mu.Unlock()
+		return false, nil
+	}
+	if ok {
+		delete(s.oauthSessionsByID, id.String())
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	if tokens.Access != "" {
+		_ = s.tokenStore.RemoveByAccess(ctx, tokens.Access)
+	}
+	if tokens.Refresh != "" {
+		_ = s.tokenStore.RemoveByRefresh(ctx, tokens.Refresh)
+	}
+	if tokens.Code != "" {
+		_ = s.tokenStore.RemoveByCode(ctx, tokens.Code)
+	}
+	return true, nil
+}
+
+func (s *memoryEdgeStateStore) removeOAuthSessionByToken(_ context.Context, tokenType string, token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sessionID, tokens := range s.oauthSessionsByID {
+		if (tokenType == "access" && tokens.Access == token) || (tokenType == "refresh" && tokens.Refresh == token) || (tokenType == "code" && tokens.Code == token) {
+			delete(s.oauthSessionsByID, sessionID)
+			return
+		}
+	}
 }
 
 func (s *memoryEdgeStateStore) GetByCode(ctx context.Context, code string) (oauth2.TokenInfo, error) {
@@ -387,6 +672,9 @@ func (c confidentialClient) GetDomain() string       { return c.domain }
 func (c confidentialClient) IsPublic() bool          { return c.secret == "" && c.secretHash == "" }
 func (c confidentialClient) GetUserID() string       { return c.userID }
 func (c confidentialClient) AllowedScopes() []string { return slices.Clone(c.scopes) }
+func (c confidentialClient) AllowedGrantTypes() []string {
+	return slices.Clone(c.grantTypes)
+}
 
 func (c confidentialClient) VerifyPassword(secret string) bool {
 	if c.secretHash == "" {
@@ -437,6 +725,13 @@ func (c *opaqueCipher) DecryptString(payload []byte) (string, error) {
 func hashOpaqueValue(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeUserCode(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "")
+	value = strings.ReplaceAll(value, " ", "")
+	return value
 }
 
 func redirectURIDomain(values []string) string {
@@ -505,7 +800,9 @@ func sqliteNullTimePtr(value *time.Time) sql.NullString {
 	return sqliteNullTime(*value)
 }
 
-func formatSQLiteTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+func formatSQLiteTime(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
 
 func parseSQLiteTime(value string) (time.Time, error) {
 	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
@@ -578,6 +875,22 @@ func tokenInfoResource(info oauth2.TokenInfo) string {
 	return strings.TrimRight(strings.TrimSpace(ext.GetExtension().Get(tokenResourceExtensionKey)), "/")
 }
 
+func tokenInfoIssuedVia(info oauth2.TokenInfo) string {
+	ext, ok := info.(oauth2.ExtendableTokenInfo)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(ext.GetExtension().Get(tokenIssuedViaExtensionKey))
+}
+
+func tokenInfoOperatorReason(info oauth2.TokenInfo) string {
+	ext, ok := info.(oauth2.ExtendableTokenInfo)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(ext.GetExtension().Get(tokenOperatorReasonKey))
+}
+
 func setTokenInfoResource(info oauth2.ExtendableTokenInfo, resource string) {
 	resource = strings.TrimRight(strings.TrimSpace(resource), "/")
 	if resource == "" {
@@ -611,6 +924,36 @@ func setTokenInfoSessionID(info oauth2.TokenInfo, sessionID string) {
 		values = make(url.Values)
 	}
 	values.Set(tokenSessionIDExtensionKey, sessionID)
+	ext.SetExtension(values)
+}
+
+func setTokenInfoIssuedVia(info oauth2.TokenInfo, issuedVia string) {
+	ext, ok := info.(oauth2.ExtendableTokenInfo)
+	if !ok {
+		return
+	}
+	values := ext.GetExtension()
+	if values == nil {
+		values = make(url.Values)
+	}
+	values.Set(tokenIssuedViaExtensionKey, strings.TrimSpace(issuedVia))
+	ext.SetExtension(values)
+}
+
+func setTokenInfoOperatorReason(info oauth2.TokenInfo, reason string) {
+	ext, ok := info.(oauth2.ExtendableTokenInfo)
+	if !ok {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	values := ext.GetExtension()
+	if values == nil {
+		values = make(url.Values)
+	}
+	values.Set(tokenOperatorReasonKey, reason)
 	ext.SetExtension(values)
 }
 
@@ -700,12 +1043,16 @@ func (s *sqliteEdgeStateStore) GetByID(ctx context.Context, id string) (oauth2.C
 	if err != nil {
 		return nil, fmt.Errorf("decode scopes for client %s: %w", id, err)
 	}
+	grantTypes, err := unmarshalStringSliceJSON([]byte(record.GrantTypes))
+	if err != nil {
+		return nil, fmt.Errorf("decode grant types for client %s: %w", id, err)
+	}
 	userID := ""
 	if record.CreatedBySubjectSub.Valid {
 		userID = record.CreatedBySubjectSub.String
 	}
 	if record.TokenEndpointAuthMethod == tokenEndpointAuthMethodNone || !record.ClientSecretHash.Valid || strings.TrimSpace(record.ClientSecretHash.String) == "" {
-		return confidentialClient{id: id, domain: redirectURIDomain(redirectURIs), userID: userID, scopes: scopes}, nil
+		return confidentialClient{id: id, domain: redirectURIDomain(redirectURIs), userID: userID, scopes: scopes, grantTypes: grantTypes}, nil
 	}
 	return confidentialClient{
 		id:         id,
@@ -713,16 +1060,61 @@ func (s *sqliteEdgeStateStore) GetByID(ctx context.Context, id string) (oauth2.C
 		userID:     userID,
 		secretHash: record.ClientSecretHash.String,
 		scopes:     scopes,
+		grantTypes: grantTypes,
 	}, nil
 }
 
 func (s *sqliteEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo) error {
+	params, sessionID, err := s.buildUpsertOAuthSessionParams(ctx, info)
+	if err != nil {
+		return err
+	}
+	if err := s.queries.UpsertOAuthSession(ctx, params); err != nil {
+		return fmt.Errorf("persist oauth session %s: %w", sessionID, err)
+	}
+	return nil
+}
+
+func (s *sqliteEdgeStateStore) ConsumeDeviceAuthorizationAndCreateToken(ctx context.Context, id ids.UUID, consumedAt time.Time, info oauth2.TokenInfo) (bool, error) {
+	params, sessionID, err := s.buildUpsertOAuthSessionParams(ctx, info)
+	if err != nil {
+		return false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin device token transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	queries := s.queries.WithTx(tx)
+	rows, err := queries.ConsumeDeviceAuthorization(ctx, platformdb.ConsumeDeviceAuthorizationParams{ConsumedAt: sqliteNullTime(consumedAt), DeviceAuthorizationID: id.Bytes(), Now: formatSQLiteTime(consumedAt)})
+	if err != nil {
+		return false, fmt.Errorf("consume device authorization %s: %w", id.String(), err)
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if err := queries.UpsertOAuthSession(ctx, params); err != nil {
+		return false, fmt.Errorf("persist oauth session %s: %w", sessionID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit device token transaction: %w", err)
+	}
+	committed = true
+	return true, nil
+}
+
+func (s *sqliteEdgeStateStore) buildUpsertOAuthSessionParams(ctx context.Context, info oauth2.TokenInfo) (platformdb.UpsertOAuthSessionParams, string, error) {
 	if info == nil {
-		return fmt.Errorf("token info is required")
+		return platformdb.UpsertOAuthSessionParams{}, "", fmt.Errorf("token info is required")
 	}
 	if strings.TrimSpace(info.GetUserID()) != "" {
 		if err := s.ensureSubject(ctx, IdentityClaims{Sub: info.GetUserID()}); err != nil {
-			return err
+			return platformdb.UpsertOAuthSessionParams{}, "", err
 		}
 	}
 	sessionID := tokenInfoSessionID(info)
@@ -732,24 +1124,29 @@ func (s *sqliteEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo
 	}
 	parsedSessionID, err := ids.Parse(sessionID)
 	if err != nil {
-		return fmt.Errorf("parse oauth session id: %w", err)
+		return platformdb.UpsertOAuthSessionParams{}, "", fmt.Errorf("parse oauth session id: %w", err)
 	}
 	serviceID := singleServiceIDFromScope(info.GetScope())
 	resource := tokenInfoResource(info)
 	codeHash, codeCiphertext, err := s.encryptOpaqueValue(info.GetCode())
 	if err != nil {
-		return err
+		return platformdb.UpsertOAuthSessionParams{}, "", err
 	}
 	accessHash, accessCiphertext, err := s.encryptOpaqueValue(info.GetAccess())
 	if err != nil {
-		return err
+		return platformdb.UpsertOAuthSessionParams{}, "", err
 	}
 	refreshHash, refreshCiphertext, err := s.encryptOpaqueValue(info.GetRefresh())
 	if err != nil {
-		return err
+		return platformdb.UpsertOAuthSessionParams{}, "", err
 	}
 	expiresAt := buildTokenSessionExpiry(info)
-	if err := s.queries.UpsertOAuthSession(ctx, platformdb.UpsertOAuthSessionParams{
+	issuedVia := tokenInfoIssuedVia(info)
+	if issuedVia == "" {
+		issuedVia = oauthSessionIssuedViaOAuth
+	}
+	operatorReason := tokenInfoOperatorReason(info)
+	return platformdb.UpsertOAuthSessionParams{
 		SessionID:                   parsedSessionID.Bytes(),
 		SubjectSub:                  info.GetUserID(),
 		ClientID:                    info.GetClientID(),
@@ -772,10 +1169,128 @@ func (s *sqliteEdgeStateStore) Create(ctx context.Context, info oauth2.TokenInfo
 		RefreshCreateAt:             sqliteNullTime(info.GetRefreshCreateAt()),
 		RefreshExpiresInSeconds:     durationToSeconds(info.GetRefreshExpiresIn()),
 		ExpiresAt:                   sqliteNullTimePtr(expiresAt),
+		IssuedVia:                   issuedVia,
+		OperatorReason:              sql.NullString{String: operatorReason, Valid: operatorReason != ""},
+	}, sessionID, nil
+}
+
+func (s *sqliteEdgeStateStore) CreateDeviceAuthorization(ctx context.Context, record deviceAuthorization) error {
+	if record.ID.IsZero() {
+		return fmt.Errorf("device authorization id is required")
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	if record.Interval <= 0 {
+		record.Interval = 5 * time.Second
+	}
+	if err := s.queries.CreateDeviceAuthorization(ctx, platformdb.CreateDeviceAuthorizationParams{
+		DeviceAuthorizationID: record.ID.Bytes(),
+		ClientID:              record.ClientID,
+		ServiceID:             record.ServiceID,
+		Resource:              record.Resource,
+		Scope:                 record.Scope,
+		DeviceCodeHash:        record.DeviceCodeHash,
+		UserCodeHash:          record.UserCodeHash,
+		UserCodeDisplay:       record.UserCodeDisplay,
+		IntervalSeconds:       durationToSeconds(record.Interval),
+		ExpiresAt:             formatSQLiteTime(record.ExpiresAt),
+		CreatedAt:             formatSQLiteTime(record.CreatedAt),
 	}); err != nil {
-		return fmt.Errorf("persist oauth session %s: %w", sessionID, err)
+		return fmt.Errorf("create device authorization %s: %w", record.ID.String(), err)
 	}
 	return nil
+}
+
+func (s *sqliteEdgeStateStore) GetDeviceAuthorizationByDeviceCode(ctx context.Context, deviceCode string) (deviceAuthorization, bool, error) {
+	row, err := s.queries.GetDeviceAuthorizationByDeviceCodeHash(ctx, platformdb.GetDeviceAuthorizationByDeviceCodeHashParams{DeviceCodeHash: hashOpaqueValue(deviceCode)})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return deviceAuthorization{}, false, nil
+		}
+		return deviceAuthorization{}, false, fmt.Errorf("load device authorization by device code: %w", err)
+	}
+	record, err := deviceAuthorizationFromDeviceCodeRow(row)
+	return record, err == nil, err
+}
+
+func (s *sqliteEdgeStateStore) GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (deviceAuthorization, bool, error) {
+	row, err := s.queries.GetDeviceAuthorizationByUserCodeHash(ctx, platformdb.GetDeviceAuthorizationByUserCodeHashParams{UserCodeHash: hashOpaqueValue(normalizeUserCode(userCode))})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return deviceAuthorization{}, false, nil
+		}
+		return deviceAuthorization{}, false, fmt.Errorf("load device authorization by user code: %w", err)
+	}
+	record, err := deviceAuthorizationFromUserCodeRow(row)
+	return record, err == nil, err
+}
+
+func (s *sqliteEdgeStateStore) ApproveDeviceAuthorization(ctx context.Context, id ids.UUID, subjectSub string, approvedAt time.Time) (bool, error) {
+	if strings.TrimSpace(subjectSub) == "" {
+		return false, fmt.Errorf("device authorization approval requires subject")
+	}
+	if err := s.ensureSubject(ctx, IdentityClaims{Sub: subjectSub}); err != nil {
+		return false, err
+	}
+	rows, err := s.queries.ApproveDeviceAuthorization(ctx, platformdb.ApproveDeviceAuthorizationParams{
+		SubjectSub:            sql.NullString{String: subjectSub, Valid: strings.TrimSpace(subjectSub) != ""},
+		ApprovedAt:            sqliteNullTime(approvedAt),
+		DeviceAuthorizationID: id.Bytes(),
+		Now:                   formatSQLiteTime(approvedAt),
+	})
+	if err != nil {
+		return false, fmt.Errorf("approve device authorization %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
+}
+
+func (s *sqliteEdgeStateStore) DenyDeviceAuthorization(ctx context.Context, id ids.UUID, deniedAt time.Time) (bool, error) {
+	rows, err := s.queries.DenyDeviceAuthorization(ctx, platformdb.DenyDeviceAuthorizationParams{DeniedAt: sqliteNullTime(deniedAt), DeviceAuthorizationID: id.Bytes(), Now: formatSQLiteTime(deniedAt)})
+	if err != nil {
+		return false, fmt.Errorf("deny device authorization %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
+}
+
+func (s *sqliteEdgeStateStore) ConsumeDeviceAuthorization(ctx context.Context, id ids.UUID, consumedAt time.Time) (bool, error) {
+	rows, err := s.queries.ConsumeDeviceAuthorization(ctx, platformdb.ConsumeDeviceAuthorizationParams{ConsumedAt: sqliteNullTime(consumedAt), DeviceAuthorizationID: id.Bytes(), Now: formatSQLiteTime(consumedAt)})
+	if err != nil {
+		return false, fmt.Errorf("consume device authorization %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
+}
+
+func (s *sqliteEdgeStateStore) UpdateDeviceAuthorizationPoll(ctx context.Context, id ids.UUID, polledAt time.Time) (bool, error) {
+	rows, err := s.queries.UpdateDeviceAuthorizationPoll(ctx, platformdb.UpdateDeviceAuthorizationPollParams{LastPollAt: sqliteNullTime(polledAt), DeviceAuthorizationID: id.Bytes()})
+	if err != nil {
+		return false, fmt.Errorf("update device authorization poll %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
+}
+
+func (s *sqliteEdgeStateStore) SlowDownDeviceAuthorizationPoll(ctx context.Context, id ids.UUID, polledAt time.Time, increment time.Duration) (bool, error) {
+	rows, err := s.queries.SlowDownDeviceAuthorizationPoll(ctx, platformdb.SlowDownDeviceAuthorizationPollParams{LastPollAt: sqliteNullTime(polledAt), IncrementSeconds: durationToSeconds(increment), DeviceAuthorizationID: id.Bytes()})
+	if err != nil {
+		return false, fmt.Errorf("slow down device authorization poll %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
+}
+
+func (s *sqliteEdgeStateStore) MarkExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error) {
+	rows, err := s.queries.MarkExpiredDeviceAuthorizations(ctx, platformdb.MarkExpiredDeviceAuthorizationsParams{Now: formatSQLiteTime(now)})
+	if err != nil {
+		return 0, fmt.Errorf("mark expired device authorizations: %w", err)
+	}
+	return rows, nil
+}
+
+func (s *sqliteEdgeStateStore) PruneExpiredDeviceAuthorizations(ctx context.Context, cutoff time.Time) (int64, error) {
+	rows, err := s.queries.PruneExpiredDeviceAuthorizations(ctx, platformdb.PruneExpiredDeviceAuthorizationsParams{Cutoff: formatSQLiteTime(cutoff)})
+	if err != nil {
+		return 0, fmt.Errorf("prune expired device authorizations: %w", err)
+	}
+	return rows, nil
 }
 
 func (s *sqliteEdgeStateStore) RemoveByCode(ctx context.Context, code string) error {
@@ -806,6 +1321,14 @@ func (s *sqliteEdgeStateStore) RemoveByRefresh(ctx context.Context, refresh stri
 		return fmt.Errorf("remove oauth session by refresh token: %w", err)
 	}
 	return nil
+}
+
+func (s *sqliteEdgeStateStore) DeleteOperatorOAuthSessionByID(ctx context.Context, id ids.UUID, clientID string) (bool, error) {
+	rows, err := s.queries.DeleteOperatorOAuthSessionByID(ctx, platformdb.DeleteOperatorOAuthSessionByIDParams{SessionID: id.Bytes(), ClientID: clientID})
+	if err != nil {
+		return false, fmt.Errorf("delete oauth session %s: %w", id.String(), err)
+	}
+	return rows > 0, nil
 }
 
 func (s *sqliteEdgeStateStore) GetByCode(ctx context.Context, code string) (oauth2.TokenInfo, error) {
@@ -1176,6 +1699,8 @@ func oauthSessionRecordFromAccessRow(row platformdb.GetOAuthSessionByAccessHashR
 		RefreshCreateAt:             timePtrFromNull(row.RefreshCreateAt),
 		RefreshExpiresInSeconds:     row.RefreshExpiresInSeconds,
 		ExpiresAt:                   timePtrFromNull(row.ExpiresAt),
+		IssuedVia:                   row.IssuedVia,
+		OperatorReason:              stringPtrFromNull(row.OperatorReason),
 	}, nil
 }
 
@@ -1193,6 +1718,50 @@ func oauthSessionRecordFromRefreshRow(row platformdb.ConsumeOAuthSessionByRefres
 
 func oauthSessionRecordFromRefreshLookupRow(row platformdb.GetOAuthSessionByRefreshHashRow) (oauthSessionRecord, error) {
 	return oauthSessionRecordFromAccessRow(platformdb.GetOAuthSessionByAccessHashRow(row))
+}
+
+func deviceAuthorizationFromDeviceCodeRow(row platformdb.OauthDeviceAuthorization) (deviceAuthorization, error) {
+	deviceID, err := ids.ParseBytes(row.DeviceAuthorizationID)
+	if err != nil {
+		return deviceAuthorization{}, fmt.Errorf("parse device authorization id: %w", err)
+	}
+	expiresAt, err := parseSQLiteTime(row.ExpiresAt)
+	if err != nil {
+		return deviceAuthorization{}, fmt.Errorf("parse device authorization expiry: %w", err)
+	}
+	createdAt, err := parseSQLiteTime(row.CreatedAt)
+	if err != nil {
+		return deviceAuthorization{}, fmt.Errorf("parse device authorization creation time: %w", err)
+	}
+	updatedAt, err := parseSQLiteTime(row.UpdatedAt)
+	if err != nil {
+		return deviceAuthorization{}, fmt.Errorf("parse device authorization update time: %w", err)
+	}
+	return deviceAuthorization{
+		ID:              deviceID,
+		ClientID:        row.ClientID,
+		SubjectSub:      stringPtrFromNull(row.SubjectSub),
+		ServiceID:       row.ServiceID,
+		Resource:        row.Resource,
+		Scope:           row.Scope,
+		DeviceCodeHash:  row.DeviceCodeHash,
+		UserCodeHash:    row.UserCodeHash,
+		UserCodeDisplay: row.UserCodeDisplay,
+		Status:          row.Status,
+		Interval:        durationFromSeconds(row.IntervalSeconds),
+		LastPollAt:      timePtrFromNull(row.LastPollAt),
+		PollCount:       row.PollCount,
+		ApprovedAt:      timePtrFromNull(row.ApprovedAt),
+		DeniedAt:        timePtrFromNull(row.DeniedAt),
+		ExpiresAt:       expiresAt,
+		ConsumedAt:      timePtrFromNull(row.ConsumedAt),
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
+	}, nil
+}
+
+func deviceAuthorizationFromUserCodeRow(row platformdb.OauthDeviceAuthorization) (deviceAuthorization, error) {
+	return deviceAuthorizationFromDeviceCodeRow(row)
 }
 
 func (s *sqliteEdgeStateStore) validateOAuthSessionAuthorization(ctx context.Context, record oauthSessionRecord) error {
@@ -1225,6 +1794,7 @@ func (s *sqliteEdgeStateStore) buildTokenInfo(record oauthSessionRecord, rawCode
 	token.SetRedirectURI(record.RedirectURI)
 	token.SetScope(record.Scope)
 	setTokenInfoResource(token, record.Resource)
+	setTokenInfoIssuedVia(token, record.IssuedVia)
 	if record.CodeChallenge != nil {
 		token.SetCodeChallenge(*record.CodeChallenge)
 	}

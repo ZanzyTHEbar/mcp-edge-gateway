@@ -44,11 +44,87 @@ func (q *Queries) AllowedServiceGrant(ctx context.Context, arg AllowedServiceGra
 	return allowed, err
 }
 
+const ApproveDeviceAuthorization = `-- name: ApproveDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET subject_sub = ?1,
+    status = 'approved',
+    approved_at = ?2,
+    updated_at = ?2
+WHERE device_authorization_id = ?3
+  AND status = 'pending'
+  AND expires_at > ?4
+`
+
+type ApproveDeviceAuthorizationParams struct {
+	SubjectSub            sql.NullString `db:"subject_sub" json:"subject_sub"`
+	ApprovedAt            sql.NullString `db:"approved_at" json:"approved_at"`
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+	Now                   string         `db:"now" json:"now"`
+}
+
+// ApproveDeviceAuthorization
+//
+//	UPDATE oauth_device_authorizations
+//	SET subject_sub = ?1,
+//	    status = 'approved',
+//	    approved_at = ?2,
+//	    updated_at = ?2
+//	WHERE device_authorization_id = ?3
+//	  AND status = 'pending'
+//	  AND expires_at > ?4
+func (q *Queries) ApproveDeviceAuthorization(ctx context.Context, arg ApproveDeviceAuthorizationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ApproveDeviceAuthorization,
+		arg.SubjectSub,
+		arg.ApprovedAt,
+		arg.DeviceAuthorizationID,
+		arg.Now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const ConsumeDeviceAuthorization = `-- name: ConsumeDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET status = 'consumed',
+    consumed_at = ?1,
+    updated_at = ?1
+WHERE device_authorization_id = ?2
+  AND status = 'approved'
+  AND subject_sub IS NOT NULL
+  AND expires_at > ?3
+`
+
+type ConsumeDeviceAuthorizationParams struct {
+	ConsumedAt            sql.NullString `db:"consumed_at" json:"consumed_at"`
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+	Now                   string         `db:"now" json:"now"`
+}
+
+// ConsumeDeviceAuthorization
+//
+//	UPDATE oauth_device_authorizations
+//	SET status = 'consumed',
+//	    consumed_at = ?1,
+//	    updated_at = ?1
+//	WHERE device_authorization_id = ?2
+//	  AND status = 'approved'
+//	  AND subject_sub IS NOT NULL
+//	  AND expires_at > ?3
+func (q *Queries) ConsumeDeviceAuthorization(ctx context.Context, arg ConsumeDeviceAuthorizationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ConsumeDeviceAuthorization, arg.ConsumedAt, arg.DeviceAuthorizationID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const ConsumeOAuthSessionByCodeHash = `-- name: ConsumeOAuthSessionByCodeHash :one
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 `
 
 type ConsumeOAuthSessionByCodeHashParams struct {
@@ -78,6 +154,8 @@ type ConsumeOAuthSessionByCodeHashRow struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // ConsumeOAuthSessionByCodeHash
@@ -85,7 +163,7 @@ type ConsumeOAuthSessionByCodeHashRow struct {
 //	UPDATE oauth_sessions
 //	SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 //	WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
-//	RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 func (q *Queries) ConsumeOAuthSessionByCodeHash(ctx context.Context, arg ConsumeOAuthSessionByCodeHashParams) (ConsumeOAuthSessionByCodeHashRow, error) {
 	row := q.db.QueryRowContext(ctx, ConsumeOAuthSessionByCodeHash, arg.AuthorizationCodeHash)
 	var i ConsumeOAuthSessionByCodeHashRow
@@ -112,6 +190,8 @@ func (q *Queries) ConsumeOAuthSessionByCodeHash(ctx context.Context, arg Consume
 		&i.RefreshCreateAt,
 		&i.RefreshExpiresInSeconds,
 		&i.ExpiresAt,
+		&i.IssuedVia,
+		&i.OperatorReason,
 	)
 	return i, err
 }
@@ -120,7 +200,7 @@ const ConsumeOAuthSessionByRefreshHash = `-- name: ConsumeOAuthSessionByRefreshH
 UPDATE oauth_sessions
 SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE refresh_token_hash = ?1 AND consumed_at IS NULL
-RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 `
 
 type ConsumeOAuthSessionByRefreshHashParams struct {
@@ -150,6 +230,8 @@ type ConsumeOAuthSessionByRefreshHashRow struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // ConsumeOAuthSessionByRefreshHash
@@ -157,7 +239,7 @@ type ConsumeOAuthSessionByRefreshHashRow struct {
 //	UPDATE oauth_sessions
 //	SET consumed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 //	WHERE refresh_token_hash = ?1 AND consumed_at IS NULL
-//	RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	RETURNING session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 func (q *Queries) ConsumeOAuthSessionByRefreshHash(ctx context.Context, arg ConsumeOAuthSessionByRefreshHashParams) (ConsumeOAuthSessionByRefreshHashRow, error) {
 	row := q.db.QueryRowContext(ctx, ConsumeOAuthSessionByRefreshHash, arg.RefreshTokenHash)
 	var i ConsumeOAuthSessionByRefreshHashRow
@@ -184,6 +266,8 @@ func (q *Queries) ConsumeOAuthSessionByRefreshHash(ctx context.Context, arg Cons
 		&i.RefreshCreateAt,
 		&i.RefreshExpiresInSeconds,
 		&i.ExpiresAt,
+		&i.IssuedVia,
+		&i.OperatorReason,
 	)
 	return i, err
 }
@@ -248,6 +332,102 @@ func (q *Queries) CountAuditEventsByType(ctx context.Context, arg CountAuditEven
 	var audit_count int64
 	err := row.Scan(&audit_count)
 	return audit_count, err
+}
+
+const CreateDeviceAuthorization = `-- name: CreateDeviceAuthorization :exec
+INSERT INTO oauth_device_authorizations (
+    device_authorization_id,
+    client_id,
+    service_id,
+    resource,
+    scope,
+    device_code_hash,
+    user_code_hash,
+    user_code_display,
+    status,
+    interval_seconds,
+    expires_at,
+    created_at,
+    updated_at
+)
+VALUES (
+    ?1,
+    ?2,
+    ?3,
+    ?4,
+    ?5,
+    ?6,
+    ?7,
+    ?8,
+    'pending',
+    ?9,
+    ?10,
+    ?11,
+    ?11
+)
+`
+
+type CreateDeviceAuthorizationParams struct {
+	DeviceAuthorizationID []byte `db:"device_authorization_id" json:"device_authorization_id"`
+	ClientID              string `db:"client_id" json:"client_id"`
+	ServiceID             string `db:"service_id" json:"service_id"`
+	Resource              string `db:"resource" json:"resource"`
+	Scope                 string `db:"scope" json:"scope"`
+	DeviceCodeHash        string `db:"device_code_hash" json:"device_code_hash"`
+	UserCodeHash          string `db:"user_code_hash" json:"user_code_hash"`
+	UserCodeDisplay       string `db:"user_code_display" json:"user_code_display"`
+	IntervalSeconds       int64  `db:"interval_seconds" json:"interval_seconds"`
+	ExpiresAt             string `db:"expires_at" json:"expires_at"`
+	CreatedAt             string `db:"created_at" json:"created_at"`
+}
+
+// CreateDeviceAuthorization
+//
+//	INSERT INTO oauth_device_authorizations (
+//	    device_authorization_id,
+//	    client_id,
+//	    service_id,
+//	    resource,
+//	    scope,
+//	    device_code_hash,
+//	    user_code_hash,
+//	    user_code_display,
+//	    status,
+//	    interval_seconds,
+//	    expires_at,
+//	    created_at,
+//	    updated_at
+//	)
+//	VALUES (
+//	    ?1,
+//	    ?2,
+//	    ?3,
+//	    ?4,
+//	    ?5,
+//	    ?6,
+//	    ?7,
+//	    ?8,
+//	    'pending',
+//	    ?9,
+//	    ?10,
+//	    ?11,
+//	    ?11
+//	)
+func (q *Queries) CreateDeviceAuthorization(ctx context.Context, arg CreateDeviceAuthorizationParams) error {
+	_, err := q.db.ExecContext(ctx, CreateDeviceAuthorization,
+		arg.DeviceAuthorizationID,
+		arg.ClientID,
+		arg.ServiceID,
+		arg.Resource,
+		arg.Scope,
+		arg.DeviceCodeHash,
+		arg.UserCodeHash,
+		arg.UserCodeDisplay,
+		arg.IntervalSeconds,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const CreateOAuthClient = `-- name: CreateOAuthClient :exec
@@ -352,6 +532,32 @@ func (q *Queries) DeleteOAuthSessionByRefreshHash(ctx context.Context, arg Delet
 	return err
 }
 
+const DeleteOperatorOAuthSessionByID = `-- name: DeleteOperatorOAuthSessionByID :execrows
+DELETE FROM oauth_sessions
+WHERE session_id = ?1
+  AND issued_via = 'operator'
+  AND client_id = ?2
+`
+
+type DeleteOperatorOAuthSessionByIDParams struct {
+	SessionID []byte `db:"session_id" json:"session_id"`
+	ClientID  string `db:"client_id" json:"client_id"`
+}
+
+// DeleteOperatorOAuthSessionByID
+//
+//	DELETE FROM oauth_sessions
+//	WHERE session_id = ?1
+//	  AND issued_via = 'operator'
+//	  AND client_id = ?2
+func (q *Queries) DeleteOperatorOAuthSessionByID(ctx context.Context, arg DeleteOperatorOAuthSessionByIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, DeleteOperatorOAuthSessionByID, arg.SessionID, arg.ClientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const DeletePendingLogin = `-- name: DeletePendingLogin :exec
 DELETE FROM edge_pending_logins WHERE state = ?1
 `
@@ -366,6 +572,39 @@ type DeletePendingLoginParams struct {
 func (q *Queries) DeletePendingLogin(ctx context.Context, arg DeletePendingLoginParams) error {
 	_, err := q.db.ExecContext(ctx, DeletePendingLogin, arg.State)
 	return err
+}
+
+const DenyDeviceAuthorization = `-- name: DenyDeviceAuthorization :execrows
+UPDATE oauth_device_authorizations
+SET status = 'denied',
+    denied_at = ?1,
+    updated_at = ?1
+WHERE device_authorization_id = ?2
+  AND status = 'pending'
+  AND expires_at > ?3
+`
+
+type DenyDeviceAuthorizationParams struct {
+	DeniedAt              sql.NullString `db:"denied_at" json:"denied_at"`
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+	Now                   string         `db:"now" json:"now"`
+}
+
+// DenyDeviceAuthorization
+//
+//	UPDATE oauth_device_authorizations
+//	SET status = 'denied',
+//	    denied_at = ?1,
+//	    updated_at = ?1
+//	WHERE device_authorization_id = ?2
+//	  AND status = 'pending'
+//	  AND expires_at > ?3
+func (q *Queries) DenyDeviceAuthorization(ctx context.Context, arg DenyDeviceAuthorizationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, DenyDeviceAuthorization, arg.DeniedAt, arg.DeviceAuthorizationID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const EdgeUpsertSubject = `-- name: EdgeUpsertSubject :exec
@@ -437,8 +676,164 @@ func (q *Queries) GetBrowserSession(ctx context.Context, arg GetBrowserSessionPa
 	return i, err
 }
 
+const GetDeviceAuthorizationByDeviceCodeHash = `-- name: GetDeviceAuthorizationByDeviceCodeHash :one
+SELECT device_authorization_id,
+       client_id,
+       subject_sub,
+       service_id,
+       resource,
+       scope,
+       device_code_hash,
+       user_code_hash,
+       user_code_display,
+       status,
+       interval_seconds,
+       last_poll_at,
+       poll_count,
+       approved_at,
+       denied_at,
+       expires_at,
+       consumed_at,
+       created_at,
+       updated_at
+FROM oauth_device_authorizations
+WHERE device_code_hash = ?1
+`
+
+type GetDeviceAuthorizationByDeviceCodeHashParams struct {
+	DeviceCodeHash string `db:"device_code_hash" json:"device_code_hash"`
+}
+
+// GetDeviceAuthorizationByDeviceCodeHash
+//
+//	SELECT device_authorization_id,
+//	       client_id,
+//	       subject_sub,
+//	       service_id,
+//	       resource,
+//	       scope,
+//	       device_code_hash,
+//	       user_code_hash,
+//	       user_code_display,
+//	       status,
+//	       interval_seconds,
+//	       last_poll_at,
+//	       poll_count,
+//	       approved_at,
+//	       denied_at,
+//	       expires_at,
+//	       consumed_at,
+//	       created_at,
+//	       updated_at
+//	FROM oauth_device_authorizations
+//	WHERE device_code_hash = ?1
+func (q *Queries) GetDeviceAuthorizationByDeviceCodeHash(ctx context.Context, arg GetDeviceAuthorizationByDeviceCodeHashParams) (OauthDeviceAuthorization, error) {
+	row := q.db.QueryRowContext(ctx, GetDeviceAuthorizationByDeviceCodeHash, arg.DeviceCodeHash)
+	var i OauthDeviceAuthorization
+	err := row.Scan(
+		&i.DeviceAuthorizationID,
+		&i.ClientID,
+		&i.SubjectSub,
+		&i.ServiceID,
+		&i.Resource,
+		&i.Scope,
+		&i.DeviceCodeHash,
+		&i.UserCodeHash,
+		&i.UserCodeDisplay,
+		&i.Status,
+		&i.IntervalSeconds,
+		&i.LastPollAt,
+		&i.PollCount,
+		&i.ApprovedAt,
+		&i.DeniedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetDeviceAuthorizationByUserCodeHash = `-- name: GetDeviceAuthorizationByUserCodeHash :one
+SELECT device_authorization_id,
+       client_id,
+       subject_sub,
+       service_id,
+       resource,
+       scope,
+       device_code_hash,
+       user_code_hash,
+       user_code_display,
+       status,
+       interval_seconds,
+       last_poll_at,
+       poll_count,
+       approved_at,
+       denied_at,
+       expires_at,
+       consumed_at,
+       created_at,
+       updated_at
+FROM oauth_device_authorizations
+WHERE user_code_hash = ?1
+`
+
+type GetDeviceAuthorizationByUserCodeHashParams struct {
+	UserCodeHash string `db:"user_code_hash" json:"user_code_hash"`
+}
+
+// GetDeviceAuthorizationByUserCodeHash
+//
+//	SELECT device_authorization_id,
+//	       client_id,
+//	       subject_sub,
+//	       service_id,
+//	       resource,
+//	       scope,
+//	       device_code_hash,
+//	       user_code_hash,
+//	       user_code_display,
+//	       status,
+//	       interval_seconds,
+//	       last_poll_at,
+//	       poll_count,
+//	       approved_at,
+//	       denied_at,
+//	       expires_at,
+//	       consumed_at,
+//	       created_at,
+//	       updated_at
+//	FROM oauth_device_authorizations
+//	WHERE user_code_hash = ?1
+func (q *Queries) GetDeviceAuthorizationByUserCodeHash(ctx context.Context, arg GetDeviceAuthorizationByUserCodeHashParams) (OauthDeviceAuthorization, error) {
+	row := q.db.QueryRowContext(ctx, GetDeviceAuthorizationByUserCodeHash, arg.UserCodeHash)
+	var i OauthDeviceAuthorization
+	err := row.Scan(
+		&i.DeviceAuthorizationID,
+		&i.ClientID,
+		&i.SubjectSub,
+		&i.ServiceID,
+		&i.Resource,
+		&i.Scope,
+		&i.DeviceCodeHash,
+		&i.UserCodeHash,
+		&i.UserCodeDisplay,
+		&i.Status,
+		&i.IntervalSeconds,
+		&i.LastPollAt,
+		&i.PollCount,
+		&i.ApprovedAt,
+		&i.DeniedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const GetOAuthClient = `-- name: GetOAuthClient :one
-SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+SELECT redirect_uris, grant_types, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 FROM oauth_clients
 WHERE client_id = ?1
 `
@@ -449,6 +844,7 @@ type GetOAuthClientParams struct {
 
 type GetOAuthClientRow struct {
 	RedirectUris            string         `db:"redirect_uris" json:"redirect_uris"`
+	GrantTypes              string         `db:"grant_types" json:"grant_types"`
 	Scopes                  string         `db:"scopes" json:"scopes"`
 	CreatedBySubjectSub     sql.NullString `db:"created_by_subject_sub" json:"created_by_subject_sub"`
 	TokenEndpointAuthMethod string         `db:"token_endpoint_auth_method" json:"token_endpoint_auth_method"`
@@ -458,7 +854,7 @@ type GetOAuthClientRow struct {
 
 // GetOAuthClient
 //
-//	SELECT redirect_uris, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
+//	SELECT redirect_uris, grant_types, scopes, created_by_subject_sub, token_endpoint_auth_method, client_secret_hash, disabled_at
 //	FROM oauth_clients
 //	WHERE client_id = ?1
 func (q *Queries) GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) (GetOAuthClientRow, error) {
@@ -466,6 +862,7 @@ func (q *Queries) GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) 
 	var i GetOAuthClientRow
 	err := row.Scan(
 		&i.RedirectUris,
+		&i.GrantTypes,
 		&i.Scopes,
 		&i.CreatedBySubjectSub,
 		&i.TokenEndpointAuthMethod,
@@ -476,7 +873,7 @@ func (q *Queries) GetOAuthClient(ctx context.Context, arg GetOAuthClientParams) 
 }
 
 const GetOAuthSessionByAccessHash = `-- name: GetOAuthSessionByAccessHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE access_token_hash = ?1
 `
@@ -508,11 +905,13 @@ type GetOAuthSessionByAccessHashRow struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // GetOAuthSessionByAccessHash
 //
-//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 //	FROM oauth_sessions
 //	WHERE access_token_hash = ?1
 func (q *Queries) GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthSessionByAccessHashParams) (GetOAuthSessionByAccessHashRow, error) {
@@ -541,12 +940,14 @@ func (q *Queries) GetOAuthSessionByAccessHash(ctx context.Context, arg GetOAuthS
 		&i.RefreshCreateAt,
 		&i.RefreshExpiresInSeconds,
 		&i.ExpiresAt,
+		&i.IssuedVia,
+		&i.OperatorReason,
 	)
 	return i, err
 }
 
 const GetOAuthSessionByCodeHash = `-- name: GetOAuthSessionByCodeHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
 `
@@ -578,11 +979,13 @@ type GetOAuthSessionByCodeHashRow struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // GetOAuthSessionByCodeHash
 //
-//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 //	FROM oauth_sessions
 //	WHERE authorization_code_hash = ?1 AND consumed_at IS NULL
 func (q *Queries) GetOAuthSessionByCodeHash(ctx context.Context, arg GetOAuthSessionByCodeHashParams) (GetOAuthSessionByCodeHashRow, error) {
@@ -611,12 +1014,14 @@ func (q *Queries) GetOAuthSessionByCodeHash(ctx context.Context, arg GetOAuthSes
 		&i.RefreshCreateAt,
 		&i.RefreshExpiresInSeconds,
 		&i.ExpiresAt,
+		&i.IssuedVia,
+		&i.OperatorReason,
 	)
 	return i, err
 }
 
 const GetOAuthSessionByRefreshHash = `-- name: GetOAuthSessionByRefreshHash :one
-SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 FROM oauth_sessions
 WHERE refresh_token_hash = ?1
 `
@@ -648,11 +1053,13 @@ type GetOAuthSessionByRefreshHashRow struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // GetOAuthSessionByRefreshHash
 //
-//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at
+//	SELECT session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason
 //	FROM oauth_sessions
 //	WHERE refresh_token_hash = ?1
 func (q *Queries) GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuthSessionByRefreshHashParams) (GetOAuthSessionByRefreshHashRow, error) {
@@ -681,6 +1088,8 @@ func (q *Queries) GetOAuthSessionByRefreshHash(ctx context.Context, arg GetOAuth
 		&i.RefreshCreateAt,
 		&i.RefreshExpiresInSeconds,
 		&i.ExpiresAt,
+		&i.IssuedVia,
+		&i.OperatorReason,
 	)
 	return i, err
 }
@@ -798,6 +1207,56 @@ func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventPara
 	return err
 }
 
+const MarkExpiredDeviceAuthorizations = `-- name: MarkExpiredDeviceAuthorizations :execrows
+UPDATE oauth_device_authorizations
+SET status = 'expired',
+    updated_at = ?1
+WHERE status IN ('pending', 'approved')
+  AND expires_at <= ?1
+`
+
+type MarkExpiredDeviceAuthorizationsParams struct {
+	Now string `db:"now" json:"now"`
+}
+
+// MarkExpiredDeviceAuthorizations
+//
+//	UPDATE oauth_device_authorizations
+//	SET status = 'expired',
+//	    updated_at = ?1
+//	WHERE status IN ('pending', 'approved')
+//	  AND expires_at <= ?1
+func (q *Queries) MarkExpiredDeviceAuthorizations(ctx context.Context, arg MarkExpiredDeviceAuthorizationsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkExpiredDeviceAuthorizations, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const PruneExpiredDeviceAuthorizations = `-- name: PruneExpiredDeviceAuthorizations :execrows
+DELETE FROM oauth_device_authorizations
+WHERE status IN ('expired', 'denied', 'consumed')
+  AND updated_at <= ?1
+`
+
+type PruneExpiredDeviceAuthorizationsParams struct {
+	Cutoff string `db:"cutoff" json:"cutoff"`
+}
+
+// PruneExpiredDeviceAuthorizations
+//
+//	DELETE FROM oauth_device_authorizations
+//	WHERE status IN ('expired', 'denied', 'consumed')
+//	  AND updated_at <= ?1
+func (q *Queries) PruneExpiredDeviceAuthorizations(ctx context.Context, arg PruneExpiredDeviceAuthorizationsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, PruneExpiredDeviceAuthorizations, arg.Cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const PutBrowserSession = `-- name: PutBrowserSession :exec
 INSERT INTO edge_browser_sessions (session_id, subject_sub, claims, expires_at, updated_at)
 VALUES (?1, NULLIF(?2, ''), ?3, ?4, CURRENT_TIMESTAMP)
@@ -854,9 +1313,68 @@ func (q *Queries) PutPendingLogin(ctx context.Context, arg PutPendingLoginParams
 	return err
 }
 
+const SlowDownDeviceAuthorizationPoll = `-- name: SlowDownDeviceAuthorizationPoll :execrows
+UPDATE oauth_device_authorizations
+SET last_poll_at = ?1,
+    poll_count = poll_count + 1,
+    interval_seconds = interval_seconds + ?2,
+    updated_at = ?1
+WHERE device_authorization_id = ?3
+`
+
+type SlowDownDeviceAuthorizationPollParams struct {
+	LastPollAt            sql.NullString `db:"last_poll_at" json:"last_poll_at"`
+	IncrementSeconds      int64          `db:"increment_seconds" json:"increment_seconds"`
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+}
+
+// SlowDownDeviceAuthorizationPoll
+//
+//	UPDATE oauth_device_authorizations
+//	SET last_poll_at = ?1,
+//	    poll_count = poll_count + 1,
+//	    interval_seconds = interval_seconds + ?2,
+//	    updated_at = ?1
+//	WHERE device_authorization_id = ?3
+func (q *Queries) SlowDownDeviceAuthorizationPoll(ctx context.Context, arg SlowDownDeviceAuthorizationPollParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, SlowDownDeviceAuthorizationPoll, arg.LastPollAt, arg.IncrementSeconds, arg.DeviceAuthorizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const UpdateDeviceAuthorizationPoll = `-- name: UpdateDeviceAuthorizationPoll :execrows
+UPDATE oauth_device_authorizations
+SET last_poll_at = ?1,
+    poll_count = poll_count + 1,
+    updated_at = ?1
+WHERE device_authorization_id = ?2
+`
+
+type UpdateDeviceAuthorizationPollParams struct {
+	LastPollAt            sql.NullString `db:"last_poll_at" json:"last_poll_at"`
+	DeviceAuthorizationID []byte         `db:"device_authorization_id" json:"device_authorization_id"`
+}
+
+// UpdateDeviceAuthorizationPoll
+//
+//	UPDATE oauth_device_authorizations
+//	SET last_poll_at = ?1,
+//	    poll_count = poll_count + 1,
+//	    updated_at = ?1
+//	WHERE device_authorization_id = ?2
+func (q *Queries) UpdateDeviceAuthorizationPoll(ctx context.Context, arg UpdateDeviceAuthorizationPollParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpdateDeviceAuthorizationPoll, arg.LastPollAt, arg.DeviceAuthorizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const UpsertOAuthSession = `-- name: UpsertOAuthSession :exec
-INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, CURRENT_TIMESTAMP)
+INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason, consumed_at, updated_at)
+VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, NULL, CURRENT_TIMESTAMP)
 ON CONFLICT(session_id) DO UPDATE SET
     subject_sub = excluded.subject_sub,
     client_id = excluded.client_id,
@@ -879,6 +1397,8 @@ ON CONFLICT(session_id) DO UPDATE SET
     refresh_create_at = excluded.refresh_create_at,
     refresh_expires_in_seconds = excluded.refresh_expires_in_seconds,
     expires_at = excluded.expires_at,
+    issued_via = excluded.issued_via,
+    operator_reason = excluded.operator_reason,
     consumed_at = NULL,
     updated_at = CURRENT_TIMESTAMP
 `
@@ -906,12 +1426,14 @@ type UpsertOAuthSessionParams struct {
 	RefreshCreateAt             sql.NullString `db:"refresh_create_at" json:"refresh_create_at"`
 	RefreshExpiresInSeconds     int64          `db:"refresh_expires_in_seconds" json:"refresh_expires_in_seconds"`
 	ExpiresAt                   sql.NullString `db:"expires_at" json:"expires_at"`
+	IssuedVia                   string         `db:"issued_via" json:"issued_via"`
+	OperatorReason              sql.NullString `db:"operator_reason" json:"operator_reason"`
 }
 
 // UpsertOAuthSession
 //
-//	INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, consumed_at, updated_at)
-//	VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, CURRENT_TIMESTAMP)
+//	INSERT INTO oauth_sessions (session_id, subject_sub, client_id, service_id, resource, redirect_uri, scope, code_challenge, code_challenge_method, authorization_code_hash, authorization_code_ciphertext, access_token_hash, access_token_ciphertext, refresh_token_hash, refresh_token_ciphertext, code_create_at, code_expires_in_seconds, access_create_at, access_expires_in_seconds, refresh_create_at, refresh_expires_in_seconds, expires_at, issued_via, operator_reason, consumed_at, updated_at)
+//	VALUES (?1, NULLIF(?2, ''), ?3, NULLIF(?4, ''), ?5, ?6, ?7, NULLIF(?8, ''), NULLIF(?9, ''), ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, NULL, CURRENT_TIMESTAMP)
 //	ON CONFLICT(session_id) DO UPDATE SET
 //	    subject_sub = excluded.subject_sub,
 //	    client_id = excluded.client_id,
@@ -934,6 +1456,8 @@ type UpsertOAuthSessionParams struct {
 //	    refresh_create_at = excluded.refresh_create_at,
 //	    refresh_expires_in_seconds = excluded.refresh_expires_in_seconds,
 //	    expires_at = excluded.expires_at,
+//	    issued_via = excluded.issued_via,
+//	    operator_reason = excluded.operator_reason,
 //	    consumed_at = NULL,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertOAuthSession(ctx context.Context, arg UpsertOAuthSessionParams) error {
@@ -960,6 +1484,8 @@ func (q *Queries) UpsertOAuthSession(ctx context.Context, arg UpsertOAuthSession
 		arg.RefreshCreateAt,
 		arg.RefreshExpiresInSeconds,
 		arg.ExpiresAt,
+		arg.IssuedVia,
+		arg.OperatorReason,
 	)
 	return err
 }

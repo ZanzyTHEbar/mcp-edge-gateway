@@ -123,6 +123,14 @@ If `MCP_EDGE_CIMD_ENABLED=true`, the edge also accepts HTTPS Client ID Metadata 
 
 CORS is disabled unless `MCP_EDGE_CORS_ALLOWED_ORIGINS` is set. Use a comma-separated allowlist for browser-based clients, or `*` only when bearer-token exposure to any browser origin is acceptable for your deployment.
 
+### Headless Client Authentication
+
+The edge supports two production-safe headless modes. Both modes issue normal edge opaque bearer tokens. MCP service routes still enforce token validity, exact service scope, exact resource binding, current subject grant, and tenant readiness.
+
+Use OAuth Device Authorization Grant for CLIs or headless agents that can ask a human to approve access in a browser. Use operator-issued tokens only for trusted automation where an operator intentionally mints a scoped token for a subject that already has the service grant.
+
+Do not send Authentik access tokens directly to MCP service paths. The edge only accepts edge-issued opaque tokens at MCP routes.
+
 Example dynamic client registration request:
 
 ```sh
@@ -165,6 +173,78 @@ Example MCP client server entry after OAuth is complete:
   }
 }
 ```
+
+Example device-only client registration request:
+
+```sh
+curl -fsS https://<edge-domain>/oauth/register \
+  -H 'Authorization: Bearer <operator-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "client_name": "example-headless-cli",
+    "grant_types": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+    "response_types": [],
+    "token_endpoint_auth_method": "none",
+    "scope": "mcp:mealie"
+  }'
+```
+
+Example device authorization request:
+
+```sh
+curl -fsS https://<edge-domain>/oauth/device_authorization \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'client_id=<client-id>' \
+  --data-urlencode 'scope=mcp:mealie' \
+  --data-urlencode 'resource=https://<edge-domain>/mealie/mcp'
+```
+
+The response contains `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in`, and `interval`. Show the `user_code` and verification URL to the user. The verification page redirects to Authentik when no browser session exists, then shows the service, scope, resource, client, and user code before approval or denial.
+
+Example device token polling request:
+
+```sh
+curl -fsS https://<edge-domain>/oauth/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
+  --data-urlencode 'client_id=<client-id>' \
+  --data-urlencode 'device_code=<device-code>'
+```
+
+Device polling outcomes:
+
+- `authorization_pending`: user has not approved yet; wait at least `interval` seconds.
+- `slow_down`: polling was too fast; increase the wait interval before retrying.
+- `access_denied`: user denied the request.
+- `expired_token`: the device code expired; restart the device authorization request.
+- success: response includes an edge-issued access token, the service `scope`, the service `resource`, and a refresh token only when the client was registered for `refresh_token`.
+
+Example operator-issued token request:
+
+```sh
+curl -fsS https://<edge-domain>/oauth/operator-tokens \
+  -H 'Authorization: Bearer <operator-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "subject_sub": "<subject-sub>",
+    "scope": "mcp:mealie",
+    "resource": "https://<edge-domain>/mealie/mcp",
+    "expires_in_seconds": 3600,
+    "reason": "short operational task"
+  }'
+```
+
+The operator token response includes `access_token`, `token_type`, `expires_in`, `scope`, `resource`, `session_id`, and `issued_via=operator`. Store only the token in the automation secret store. Keep `session_id` for revocation and audit correlation. `expires_in_seconds` defaults to one hour and is capped at 30 days; `reason` is optional and capped at 1024 characters.
+
+Example operator-issued token revocation:
+
+```sh
+curl -fsS https://<edge-domain>/oauth/operator-tokens/<session-id> \
+  -X DELETE \
+  -H 'Authorization: Bearer <operator-token>'
+```
+
+Revocation is scoped to sessions issued through `/oauth/operator-tokens`; it does not revoke browser OAuth or device-flow sessions. Operators can introspect any edge-issued token with `/oauth/introspect`; active responses include `session_id`, `client_id`, `sub`, `scope`, `resource`, `issued_via`, `iat`, and `exp`.
 
 ### opencode Client Setup
 

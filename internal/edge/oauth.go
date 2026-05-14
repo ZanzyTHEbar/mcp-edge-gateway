@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	oauth2 "github.com/go-oauth2/oauth2/v4"
 	oauth2errors "github.com/go-oauth2/oauth2/v4/errors"
 	"github.com/go-oauth2/oauth2/v4/manage"
+	"github.com/go-oauth2/oauth2/v4/models"
 	oauth2server "github.com/go-oauth2/oauth2/v4/server"
 	"github.com/rs/zerolog"
 )
@@ -28,6 +30,13 @@ const (
 	tokenEndpointAuthMethodNone        = "none"
 	tokenEndpointAuthMethodClientPost  = "client_secret_post"
 	tokenEndpointAuthMethodClientBasic = "client_secret_basic"
+
+	oauthGrantAuthorizationCode = "authorization_code"
+	oauthGrantRefreshToken      = "refresh_token"
+	oauthGrantDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	operatorTokenMintClientID   = "mcp-edge-operator-token-mint"
+	operatorTokenMaxTTL         = 30 * 24 * time.Hour
+	operatorTokenReasonMaxLen   = 1024
 )
 
 type OAuthService struct {
@@ -79,15 +88,44 @@ type clientRegistrationResponse struct {
 	Scope                   string   `json:"scope,omitempty"`
 }
 
+type deviceAuthorizationResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int64  `json:"expires_in"`
+	Interval                int64  `json:"interval"`
+}
+
 type tokenIntrospectionResponse struct {
 	Active    bool   `json:"active"`
+	SessionID string `json:"session_id,omitempty"`
 	ClientID  string `json:"client_id,omitempty"`
 	Sub       string `json:"sub,omitempty"`
 	Scope     string `json:"scope,omitempty"`
 	Resource  string `json:"resource,omitempty"`
 	TokenType string `json:"token_type,omitempty"`
+	IssuedVia string `json:"issued_via,omitempty"`
 	Exp       int64  `json:"exp,omitempty"`
 	Iat       int64  `json:"iat,omitempty"`
+}
+
+type operatorTokenRequest struct {
+	SubjectSub       string `json:"subject_sub"`
+	Scope            string `json:"scope"`
+	Resource         string `json:"resource"`
+	ExpiresInSeconds int64  `json:"expires_in_seconds"`
+	Reason           string `json:"reason"`
+}
+
+type operatorTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64  `json:"expires_in"`
+	Scope       string `json:"scope"`
+	Resource    string `json:"resource"`
+	SessionID   string `json:"session_id"`
+	IssuedVia   string `json:"issued_via"`
 }
 
 type refreshClientIDContextKey struct{}
@@ -169,8 +207,12 @@ func (o *OAuthService) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-protected-resource/", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/oauth/register", o.handleClientRegistration)
 	mux.HandleFunc("/oauth/authorize", o.handleAuthorize)
+	mux.HandleFunc("/oauth/device_authorization", o.handleDeviceAuthorization)
+	mux.HandleFunc("/oauth/device", o.handleDeviceVerification)
 	mux.HandleFunc("/oauth/token", o.handleToken)
 	mux.HandleFunc("/oauth/introspect", o.handleIntrospect)
+	mux.HandleFunc("/oauth/operator-tokens", o.handleOperatorTokens)
+	mux.HandleFunc("/oauth/operator-tokens/", o.handleOperatorToken)
 }
 
 func (o *OAuthService) ValidateBearerToken(r *http.Request) (oauth2.TokenInfo, error) {
@@ -187,17 +229,107 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                o.publicBaseURL,
 		"authorization_endpoint":                o.publicBaseURL + "/oauth/authorize",
+		"device_authorization_endpoint":         o.publicBaseURL + "/oauth/device_authorization",
 		"token_endpoint":                        o.publicBaseURL + "/oauth/token",
 		"registration_endpoint":                 o.publicBaseURL + "/oauth/register",
 		"introspection_endpoint":                o.publicBaseURL + "/oauth/introspect",
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 []string{oauthGrantAuthorizationCode, oauthGrantRefreshToken, oauthGrantDeviceCode},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{tokenEndpointAuthMethodNone, tokenEndpointAuthMethodClientPost, tokenEndpointAuthMethodClientBasic},
 		"scopes_supported":                      o.catalog.Scopes(),
 		"resource_indicators_supported":         true,
 		"client_id_metadata_document_supported": true,
 		"dynamic_client_registration_supported": o.dcrEnabled,
+	})
+}
+
+func (o *OAuthService) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "device authorization requires POST")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "unable to parse request parameters")
+		return
+	}
+	clientID, clientSecret, err := resolveClientCredentials(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	clientInfo, err := o.stateStore.GetByID(r.Context(), clientID)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	if !verifyClientSecretForTokenRequest(clientInfo, clientSecret) {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	if !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for device_code grant")
+		return
+	}
+	scope := strings.TrimSpace(r.Form.Get("scope"))
+	if scope == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "exactly one mcp:<service> scope is required")
+		return
+	}
+	if !scopeStringAllowed(scope, o.catalog.Scopes()) || !clientAllowsScope(clientInfo, scope) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "requested scope is not supported")
+		return
+	}
+	serviceID, err := singleServiceFromScope(scope)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	resource, err := o.validateResourceIndicator(r, scope)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", err.Error())
+		return
+	}
+	deviceCode, err := randomToken(32)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "device_code_generation_failed", "unable to issue device code")
+		return
+	}
+	userCode, err := generateUserCode()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "user_code_generation_failed", "unable to issue user code")
+		return
+	}
+	now := time.Now().UTC()
+	ttl := 10 * time.Minute
+	interval := 5 * time.Second
+	record := deviceAuthorization{
+		ID:              ids.New(),
+		ClientID:        clientID,
+		ServiceID:       serviceID,
+		Resource:        resource,
+		Scope:           scope,
+		DeviceCodeHash:  hashOpaqueValue(deviceCode),
+		UserCodeHash:    hashOpaqueValue(normalizeUserCode(userCode)),
+		UserCodeDisplay: userCode,
+		Interval:        interval,
+		ExpiresAt:       now.Add(ttl),
+		CreatedAt:       now,
+	}
+	if err := o.stateStore.CreateDeviceAuthorization(r.Context(), record); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "device_authorization_store_failed", "unable to persist device authorization")
+		return
+	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{EventType: "oauth.device.created", EventStatus: "created", ServiceID: serviceID, Payload: map[string]any{"client_id": clientID, "scope": scope, "resource": resource}})
+	verificationURI := o.publicBaseURL + "/oauth/device"
+	writeJSON(w, http.StatusOK, deviceAuthorizationResponse{
+		DeviceCode:              deviceCode,
+		UserCode:                userCode,
+		VerificationURI:         verificationURI,
+		VerificationURIComplete: verificationURI + "?user_code=" + url.QueryEscape(userCode),
+		ExpiresIn:               int64(ttl / time.Second),
+		Interval:                int64(interval / time.Second),
 	})
 }
 
@@ -388,6 +520,10 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "OAuth client is not registered or is disabled")
 		return
 	}
+	if !clientAllowsGrant(clientInfo, oauthGrantAuthorizationCode) {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for authorization_code grant")
+		return
+	}
 	if !clientAllowsScope(clientInfo, r.FormValue("scope")) {
 		o.recordAuditEvent(r.Context(), edgeAuditEvent{
 			ActorSubjectSub: subject.Sub,
@@ -425,10 +561,173 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (o *OAuthService) handleDeviceVerification(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "device verification supports GET and POST")
+		return
+	}
+	if r.Method == http.MethodGet {
+		o.handleDeviceVerificationGet(w, r)
+		return
+	}
+	o.handleDeviceVerificationPost(w, r)
+}
+
+func (o *OAuthService) handleDeviceVerificationGet(w http.ResponseWriter, r *http.Request) {
+	if _, ok := SubjectFromContext(r.Context()); !ok {
+		if o.browserAuth != nil {
+			o.browserAuth.BeginBrowserLogin(w, r, r.URL.String())
+			return
+		}
+		writeJSONError(w, http.StatusUnauthorized, "login_required", "browser authentication is required before device approval")
+		return
+	}
+	userCode := strings.TrimSpace(r.URL.Query().Get("user_code"))
+	if userCode == "" {
+		o.renderDeviceCodeEntry(w, "")
+		return
+	}
+	record, ok, err := o.stateStore.GetDeviceAuthorizationByUserCode(r.Context(), userCode)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "device_authorization_unavailable", "unable to load device authorization")
+		return
+	}
+	if !ok || record.Status != deviceAuthorizationStatusPending || !time.Now().UTC().Before(record.ExpiresAt) {
+		o.renderDeviceCodeEntry(w, "Device code is invalid or expired.")
+		return
+	}
+	o.renderDeviceApproval(w, r, record, "")
+}
+
+func (o *OAuthService) handleDeviceVerificationPost(w http.ResponseWriter, r *http.Request) {
+	subject, ok := SubjectFromContext(r.Context())
+	if !ok || strings.TrimSpace(subject.Sub) == "" {
+		writeJSONError(w, http.StatusUnauthorized, "login_required", "browser authentication is required before device approval")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "unable to parse device approval form")
+		return
+	}
+	action := strings.TrimSpace(r.Form.Get("action"))
+	userCode := strings.TrimSpace(r.Form.Get("user_code"))
+	record, ok, err := o.stateStore.GetDeviceAuthorizationByUserCode(r.Context(), userCode)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "device_authorization_unavailable", "unable to load device authorization")
+		return
+	}
+	now := time.Now().UTC()
+	if !ok || record.Status != deviceAuthorizationStatusPending || !now.Before(record.ExpiresAt) {
+		o.renderDeviceCodeEntry(w, "Device code is invalid or expired.")
+		return
+	}
+	if action != "approve" && action != "deny" {
+		o.renderDeviceApproval(w, r, record, "Choose approve or deny.")
+		return
+	}
+	if !validDeviceCSRFToken(r, record) {
+		writeJSONError(w, http.StatusForbidden, "invalid_csrf_token", "device approval form token is invalid")
+		return
+	}
+	if action == "deny" {
+		denied, err := o.stateStore.DenyDeviceAuthorization(r.Context(), record.ID, now)
+		if err != nil || !denied {
+			writeJSONError(w, http.StatusConflict, "device_authorization_not_pending", "device authorization could not be denied")
+			return
+		}
+		o.recordAuditEvent(r.Context(), edgeAuditEvent{ActorSubjectSub: subject.Sub, ServiceID: record.ServiceID, EventType: "oauth.device.denied", EventStatus: "denied", Payload: map[string]any{"client_id": record.ClientID}})
+		o.renderDeviceDone(w, "Device request denied. You can return to the device.")
+		return
+	}
+	clientInfo, err := o.stateStore.GetByID(r.Context(), record.ClientID)
+	if err != nil || !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) || !clientAllowsScope(clientInfo, record.Scope) {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is no longer authorized for this device request")
+		return
+	}
+	service, ok := o.catalog.ServiceByID(record.ServiceID)
+	if !ok || record.Resource != o.publicBaseURL+service.PublicPath {
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", "device authorization resource is no longer valid")
+		return
+	}
+	if o.grants != nil {
+		allowed, err := o.grants.AllowedScopes(r.Context(), subject.Sub, record.Scope)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
+			return
+		}
+		if !allowed {
+			writeJSONError(w, http.StatusForbidden, "service_not_granted", "requested scope is not granted for this subject")
+			return
+		}
+	}
+	if err := o.stateStore.UpsertSubject(r.Context(), IdentityClaims{Sub: subject.Sub, Email: subject.Email, Name: subject.DisplayName, PreferredUsername: subject.PreferredUsername, Groups: subject.Groups}); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "subject_sync_failed", "unable to persist subject identity")
+		return
+	}
+	approved, err := o.stateStore.ApproveDeviceAuthorization(r.Context(), record.ID, subject.Sub, now)
+	if err != nil || !approved {
+		writeJSONError(w, http.StatusConflict, "device_authorization_not_pending", "device authorization could not be approved")
+		return
+	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{ActorSubjectSub: subject.Sub, ServiceID: record.ServiceID, EventType: "oauth.device.approved", EventStatus: "approved", Payload: map[string]any{"client_id": record.ClientID, "scope": record.Scope, "resource": record.Resource}})
+	o.renderDeviceDone(w, "Device request approved. You can return to the device.")
+}
+
+func (o *OAuthService) renderDeviceCodeEntry(w http.ResponseWriter, message string) {
+	setDeviceHTMLHeaders(w)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><body><main><h1>MCP Device Authorization</h1><p>%s</p><form method="get" action="/oauth/device"><label>User code <input name="user_code" autocomplete="one-time-code" autofocus></label><button type="submit">Continue</button></form></main></body></html>`, html.EscapeString(message))
+}
+
+func (o *OAuthService) renderDeviceApproval(w http.ResponseWriter, r *http.Request, record deviceAuthorization, message string) {
+	setDeviceHTMLHeaders(w)
+	serviceName := record.ServiceID
+	if service, ok := o.catalog.ServiceByID(record.ServiceID); ok {
+		serviceName = service.DisplayName
+	}
+	csrfToken := deviceCSRFToken(r, record)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><body><main><h1>Approve MCP Device?</h1><p>%s</p><dl><dt>Client</dt><dd>%s</dd><dt>Service</dt><dd>%s</dd><dt>Scope</dt><dd>%s</dd><dt>Resource</dt><dd>%s</dd><dt>User code</dt><dd>%s</dd></dl><form method="post" action="/oauth/device"><input type="hidden" name="user_code" value="%s"><input type="hidden" name="csrf_token" value="%s"><button type="submit" name="action" value="approve">Approve</button><button type="submit" name="action" value="deny">Deny</button></form></main></body></html>`, html.EscapeString(message), html.EscapeString(record.ClientID), html.EscapeString(serviceName), html.EscapeString(record.Scope), html.EscapeString(record.Resource), html.EscapeString(record.UserCodeDisplay), html.EscapeString(record.UserCodeDisplay), html.EscapeString(csrfToken))
+}
+
+func (o *OAuthService) renderDeviceDone(w http.ResponseWriter, message string) {
+	setDeviceHTMLHeaders(w)
+	_, _ = fmt.Fprintf(w, `<!doctype html><html><body><main><h1>MCP Device Authorization</h1><p>%s</p></main></body></html>`, html.EscapeString(message))
+}
+
+func setDeviceHTMLHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+}
+
+func deviceCSRFToken(r *http.Request, record deviceAuthorization) string {
+	cookie, err := r.Cookie(browserSessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return hashOpaqueValue(cookie.Value + "|" + record.ID.String())
+}
+
+func validDeviceCSRFToken(r *http.Request, record deviceAuthorization) bool {
+	expected := deviceCSRFToken(r, record)
+	provided := strings.TrimSpace(r.Form.Get("csrf_token"))
+	return expected != "" && provided != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1
+}
+
 func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "token exchange requires POST")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "unable to parse request parameters")
+		return
+	}
+	if r.Form.Get("grant_type") == oauthGrantDeviceCode {
+		o.handleDeviceToken(w, r)
 		return
 	}
 	resource, err := o.validateTokenResourceIndicator(r)
@@ -444,6 +743,10 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if refreshClientID != "" {
 		r = r.WithContext(context.WithValue(r.Context(), refreshClientIDContextKey{}, refreshClientID))
+	}
+	if err := o.validateClientGrantType(r, refreshClientID); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", err.Error())
+		return
 	}
 	r = r.WithContext(context.WithValue(r.Context(), expectedResourceContextKey{}, resource))
 	auditClientID := refreshClientID
@@ -470,6 +773,134 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 			"resource":   resource,
 		},
 	})
+}
+
+func (o *OAuthService) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
+	clientID, clientSecret, err := resolveClientCredentials(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	clientInfo, err := o.stateStore.GetByID(r.Context(), clientID)
+	if err != nil || !verifyClientSecretForTokenRequest(clientInfo, clientSecret) {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	if !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for device_code grant")
+		return
+	}
+	deviceCode := strings.TrimSpace(r.Form.Get("device_code"))
+	if deviceCode == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
+		return
+	}
+	record, ok, err := o.stateStore.GetDeviceAuthorizationByDeviceCode(r.Context(), deviceCode)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "server_error", "unable to load device authorization")
+		return
+	}
+	if !ok || record.ClientID != clientID {
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
+		return
+	}
+	now := time.Now().UTC()
+	if !now.Before(record.ExpiresAt) || record.Status == deviceAuthorizationStatusExpired {
+		_, _ = o.stateStore.MarkExpiredDeviceAuthorizations(r.Context(), now)
+		writeJSONError(w, http.StatusBadRequest, "expired_token", "device_code has expired")
+		return
+	}
+	if record.LastPollAt != nil && now.Sub(*record.LastPollAt) < record.Interval {
+		_, _ = o.stateStore.SlowDownDeviceAuthorizationPoll(r.Context(), record.ID, now, 5*time.Second)
+		writeJSONError(w, http.StatusBadRequest, "slow_down", "device authorization polling is too frequent")
+		return
+	}
+	_, _ = o.stateStore.UpdateDeviceAuthorizationPoll(r.Context(), record.ID, now)
+	switch record.Status {
+	case deviceAuthorizationStatusPending:
+		writeJSONError(w, http.StatusBadRequest, "authorization_pending", "device authorization is pending")
+		return
+	case deviceAuthorizationStatusDenied:
+		writeJSONError(w, http.StatusBadRequest, "access_denied", "device authorization was denied")
+		return
+	case deviceAuthorizationStatusConsumed:
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code has already been consumed")
+		return
+	case deviceAuthorizationStatusApproved:
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
+		return
+	}
+	if record.SubjectSub == nil || strings.TrimSpace(*record.SubjectSub) == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device authorization has no approving subject")
+		return
+	}
+	if !clientAllowsScope(clientInfo, record.Scope) || !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) {
+		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is no longer authorized for this device grant")
+		return
+	}
+	service, ok := o.catalog.ServiceByID(record.ServiceID)
+	if !ok || record.Resource != o.publicBaseURL+service.PublicPath {
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", "device authorization resource is no longer valid")
+		return
+	}
+	if o.grants != nil {
+		allowed, err := o.grants.AllowedScopes(r.Context(), *record.SubjectSub, record.Scope)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
+			return
+		}
+		if !allowed {
+			writeJSONError(w, http.StatusForbidden, "service_not_granted", "requested scope is not granted for this subject")
+			return
+		}
+	}
+	accessToken, err := randomToken(32)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "unable to issue access token")
+		return
+	}
+	token := models.NewToken()
+	token.SetClientID(clientID)
+	token.SetUserID(*record.SubjectSub)
+	token.SetScope(record.Scope)
+	token.SetAccess(accessToken)
+	token.SetAccessCreateAt(now)
+	token.SetAccessExpiresIn(time.Hour)
+	setTokenInfoResource(token, record.Resource)
+	setTokenInfoIssuedVia(token, oauthGrantDeviceCode)
+	var refreshToken string
+	if clientAllowsGrant(clientInfo, oauthGrantRefreshToken) {
+		refreshToken, err = randomToken(32)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "unable to issue refresh token")
+			return
+		}
+		token.SetRefresh(refreshToken)
+		token.SetRefreshCreateAt(now)
+		token.SetRefreshExpiresIn(24 * time.Hour)
+	}
+	consumed, err := o.stateStore.ConsumeDeviceAuthorizationAndCreateToken(r.Context(), record.ID, now, token)
+	if err != nil || !consumed {
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "token_store_failed", "unable to persist device token")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code could not be consumed")
+		return
+	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{ActorSubjectSub: *record.SubjectSub, ServiceID: record.ServiceID, EventType: "oauth.device.token_issued", EventStatus: "issued", Payload: map[string]any{"client_id": clientID, "scope": record.Scope, "resource": record.Resource}})
+	response := map[string]any{
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_in":   int64(time.Hour / time.Second),
+		"scope":        record.Scope,
+		"resource":     record.Resource,
+	}
+	if refreshToken != "" {
+		response["refresh_token"] = refreshToken
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 type statusTrackingResponseWriter struct {
@@ -519,14 +950,160 @@ func (o *OAuthService) handleIntrospect(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, tokenIntrospectionResponse{
 		Active:    true,
+		SessionID: tokenInfoSessionID(ti),
 		ClientID:  ti.GetClientID(),
 		Sub:       ti.GetUserID(),
 		Scope:     ti.GetScope(),
 		Resource:  tokenInfoResource(ti),
 		TokenType: "Bearer",
+		IssuedVia: tokenInfoIssuedVia(ti),
 		Iat:       ti.GetAccessCreateAt().Unix(),
 		Exp:       ti.GetAccessCreateAt().Add(ti.GetAccessExpiresIn()).Unix(),
 	})
+}
+
+func (o *OAuthService) handleOperatorTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "operator token minting requires POST")
+		return
+	}
+	if !o.requireOperatorToken(w, r) {
+		return
+	}
+	defer func() { _, _ = io.Copy(io.Discard, r.Body) }()
+	var req operatorTokenRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "request body must be JSON")
+		return
+	}
+	subjectSub := strings.TrimSpace(req.SubjectSub)
+	if subjectSub == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_subject", "subject_sub is required")
+		return
+	}
+	scope := strings.TrimSpace(req.Scope)
+	if scope == "" || !scopeStringAllowed(scope, o.catalog.Scopes()) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "requested scope is not supported")
+		return
+	}
+	serviceID, err := singleServiceFromScope(scope)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	service, ok := o.catalog.ServiceByID(serviceID)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "requested service is not registered")
+		return
+	}
+	resource := strings.TrimRight(strings.TrimSpace(req.Resource), "/")
+	if resource == "" {
+		resource = o.publicBaseURL + service.PublicPath
+	}
+	if resource != o.publicBaseURL+service.PublicPath {
+		writeJSONError(w, http.StatusBadRequest, "invalid_resource", "resource must match the requested MCP service")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if len(reason) > operatorTokenReasonMaxLen {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "reason is too long")
+		return
+	}
+	if o.grants != nil {
+		allowed, err := o.grants.AllowedScopes(r.Context(), subjectSub, scope)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
+			return
+		}
+		if !allowed {
+			writeJSONError(w, http.StatusForbidden, "service_not_granted", "requested scope is not granted for this subject")
+			return
+		}
+	}
+	if err := o.ensureOperatorTokenClient(r.Context()); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "operator_client_unavailable", "unable to prepare operator token client")
+		return
+	}
+	expiresIn := time.Duration(req.ExpiresInSeconds) * time.Second
+	if expiresIn <= 0 {
+		expiresIn = time.Hour
+	}
+	if expiresIn > operatorTokenMaxTTL {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "expires_in_seconds exceeds operator token maximum")
+		return
+	}
+	accessToken, err := randomToken(32)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "unable to issue access token")
+		return
+	}
+	now := time.Now().UTC()
+	sessionID := ids.New().String()
+	token := models.NewToken()
+	token.SetClientID(operatorTokenMintClientID)
+	token.SetUserID(subjectSub)
+	token.SetScope(scope)
+	token.SetAccess(accessToken)
+	token.SetAccessCreateAt(now)
+	token.SetAccessExpiresIn(expiresIn)
+	setTokenInfoSessionID(token, sessionID)
+	setTokenInfoResource(token, resource)
+	setTokenInfoIssuedVia(token, oauthSessionIssuedViaOperator)
+	setTokenInfoOperatorReason(token, reason)
+	if err := o.stateStore.Create(r.Context(), token); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "token_store_failed", "unable to persist operator token")
+		return
+	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{ActorSubjectSub: subjectSub, ServiceID: serviceID, EventType: "oauth.operator_token.issued", EventStatus: "issued", Payload: map[string]any{"client_id": operatorTokenMintClientID, "scope": scope, "resource": resource, "session_id": sessionID}})
+	writeJSON(w, http.StatusCreated, operatorTokenResponse{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(expiresIn / time.Second), Scope: scope, Resource: resource, SessionID: sessionID, IssuedVia: oauthSessionIssuedViaOperator})
+}
+
+func (o *OAuthService) handleOperatorToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "operator token revocation requires DELETE")
+		return
+	}
+	if !o.requireOperatorToken(w, r) {
+		return
+	}
+	sessionIDRaw := strings.TrimPrefix(r.URL.Path, "/oauth/operator-tokens/")
+	if strings.Contains(sessionIDRaw, "/") || strings.TrimSpace(sessionIDRaw) == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "session_id path segment is required")
+		return
+	}
+	sessionID, err := ids.Parse(sessionIDRaw)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_session_id", "session_id must be a UUID")
+		return
+	}
+	deleted, err := o.stateStore.DeleteOperatorOAuthSessionByID(r.Context(), sessionID, operatorTokenMintClientID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "token_revoke_failed", "unable to revoke operator token")
+		return
+	}
+	if !deleted {
+		writeJSONError(w, http.StatusNotFound, "token_not_found", "operator token session was not found")
+		return
+	}
+	o.recordAuditEvent(r.Context(), edgeAuditEvent{EventType: "oauth.operator_token.revoked", EventStatus: "revoked", Payload: map[string]any{"session_id": sessionID.String()}})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (o *OAuthService) ensureOperatorTokenClient(ctx context.Context) error {
+	if _, err := o.stateStore.GetByID(ctx, operatorTokenMintClientID); err == nil {
+		return nil
+	}
+	return o.stateStore.CreateClient(ctx, registeredClient{
+		ID:                      operatorTokenMintClientID,
+		Name:                    "MCP Edge Operator Token Mint",
+		GrantTypes:              []string{oauthSessionIssuedViaOperator},
+		ResponseTypes:           []string{},
+		TokenEndpointAuthMethod: tokenEndpointAuthMethodNone,
+		Scopes:                  o.catalog.Scopes(),
+		CreatedAt:               time.Now().UTC(),
+	}, "operator")
 }
 
 func (o *OAuthService) recordAuditEvent(ctx context.Context, event edgeAuditEvent) {
@@ -584,6 +1161,57 @@ func clientAllowsScope(clientInfo oauth2.ClientInfo, scope string) bool {
 		return false
 	}
 	return scopeStringAllowed(scope, clientScopes.AllowedScopes())
+}
+
+func clientAllowsGrant(clientInfo oauth2.ClientInfo, grantType string) bool {
+	grantType = strings.TrimSpace(grantType)
+	if grantType == "" {
+		return false
+	}
+	clientGrantTypes, ok := clientInfo.(grantTypedClient)
+	if !ok {
+		return grantType == "authorization_code" || grantType == "refresh_token"
+	}
+	return slices.Contains(clientGrantTypes.AllowedGrantTypes(), grantType)
+}
+
+func verifyClientSecretForTokenRequest(clientInfo oauth2.ClientInfo, clientSecret string) bool {
+	if clientInfo == nil {
+		return false
+	}
+	if verifier, ok := clientInfo.(oauth2.ClientPasswordVerifier); ok {
+		return verifier.VerifyPassword(clientSecret)
+	}
+	if clientInfo.IsPublic() {
+		return strings.TrimSpace(clientSecret) == ""
+	}
+	return clientInfo.GetSecret() != "" && clientInfo.GetSecret() == clientSecret
+}
+
+func (o *OAuthService) validateClientGrantType(r *http.Request, prevalidatedClientID string) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("unable to parse request parameters")
+	}
+	grantType := strings.TrimSpace(r.Form.Get("grant_type"))
+	if grantType != oauthGrantAuthorizationCode && grantType != oauthGrantRefreshToken && grantType != oauthGrantDeviceCode {
+		return nil
+	}
+	clientID := strings.TrimSpace(prevalidatedClientID)
+	if clientID == "" {
+		var err error
+		clientID, _, err = resolveClientCredentials(r)
+		if err != nil {
+			return fmt.Errorf("registered OAuth client is required")
+		}
+	}
+	clientInfo, err := o.stateStore.GetByID(r.Context(), clientID)
+	if err != nil {
+		return fmt.Errorf("registered OAuth client is required")
+	}
+	if !clientAllowsGrant(clientInfo, grantType) {
+		return fmt.Errorf("client is not registered for %s grant", grantType)
+	}
+	return nil
 }
 
 func (o *OAuthService) validateResourceIndicator(r *http.Request, scope string) (string, error) {
@@ -659,30 +1287,38 @@ func normalizeClientRegistration(req clientRegistrationRequest, allowedScopes []
 	if record.Name == "" {
 		return registeredClient{}, fmt.Errorf("client_name is required")
 	}
-	if len(record.RedirectURIs) == 0 {
-		return registeredClient{}, fmt.Errorf("at least one redirect URI is required")
-	}
-	for _, redirectURI := range record.RedirectURIs {
-		if err := validateRedirectURI(redirectURI); err != nil {
-			return registeredClient{}, err
-		}
-	}
-
 	if len(record.GrantTypes) == 0 {
-		record.GrantTypes = []string{"authorization_code", "refresh_token"}
+		record.GrantTypes = []string{oauthGrantAuthorizationCode, oauthGrantRefreshToken}
 	}
 	if len(record.ResponseTypes) == 0 {
-		record.ResponseTypes = []string{"code"}
+		if slices.Contains(record.GrantTypes, oauthGrantAuthorizationCode) {
+			record.ResponseTypes = []string{"code"}
+		} else {
+			record.ResponseTypes = []string{}
+		}
 	}
 	if record.TokenEndpointAuthMethod == "" {
 		record.TokenEndpointAuthMethod = tokenEndpointAuthMethodNone
 	}
 
-	if !slices.Equal(record.ResponseTypes, []string{"code"}) {
-		return registeredClient{}, fmt.Errorf("only response type code is supported")
-	}
 	if !grantTypesAllowed(record.GrantTypes) {
-		return registeredClient{}, fmt.Errorf("only authorization_code and refresh_token grant types are supported")
+		return registeredClient{}, fmt.Errorf("unsupported OAuth grant type")
+	}
+	usesAuthorizationCode := slices.Contains(record.GrantTypes, oauthGrantAuthorizationCode)
+	if usesAuthorizationCode {
+		if len(record.RedirectURIs) == 0 {
+			return registeredClient{}, fmt.Errorf("authorization_code clients require at least one redirect URI")
+		}
+		if !slices.Equal(record.ResponseTypes, []string{"code"}) {
+			return registeredClient{}, fmt.Errorf("authorization_code clients require response type code")
+		}
+	} else if len(record.ResponseTypes) != 0 {
+		return registeredClient{}, fmt.Errorf("response_types must be empty unless authorization_code is registered")
+	}
+	for _, redirectURI := range record.RedirectURIs {
+		if err := validateRedirectURI(redirectURI); err != nil {
+			return registeredClient{}, err
+		}
 	}
 	if !slices.Contains([]string{
 		tokenEndpointAuthMethodNone,
@@ -822,7 +1458,7 @@ func resolvePublicCIMDHost(ctx context.Context, host string) ([]net.IPAddr, erro
 func grantTypesAllowed(grantTypes []string) bool {
 	for _, grantType := range grantTypes {
 		switch grantType {
-		case "authorization_code", "refresh_token":
+		case oauthGrantAuthorizationCode, oauthGrantRefreshToken, oauthGrantDeviceCode:
 			continue
 		default:
 			return false
@@ -858,6 +1494,18 @@ func generateClientSecret() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf[:]), nil
+}
+
+func generateUserCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i, value := range buf {
+		buf[i] = alphabet[int(value)%len(alphabet)]
+	}
+	return string(buf[:4]) + "-" + string(buf[4:]), nil
 }
 
 func (o *OAuthService) requireOperatorToken(w http.ResponseWriter, r *http.Request) bool {
