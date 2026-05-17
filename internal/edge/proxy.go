@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,6 +26,12 @@ import (
 const sseBridgeEndpointTimeout = 10 * time.Second
 
 const sseBridgeResponseTimeout = 30 * time.Second
+
+const sseBridgeSessionIdleTimeout = 10 * time.Minute
+
+const sseBridgeMaxSessions = 128
+
+var errSSEBridgeSessionNotFound = errors.New("sse bridge session not found")
 
 func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath string, insecureSkipVerify bool, logger zerolog.Logger) *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
@@ -50,18 +59,255 @@ func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath 
 }
 
 func NewSSEToStreamableHTTPBridge(target *url.URL, publicPath string, upstreamPath string, insecureSkipVerify bool, logger zerolog.Logger) http.Handler {
-	transport := newEdgeTransport(insecureSkipVerify)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			bridgeStreamablePost(w, r, target, publicPath, upstreamPath, transport, logger)
-		case http.MethodGet:
-			bridgeStreamableGet(w, r, target, publicPath, upstreamPath, transport, logger)
-		default:
-			w.Header().Set("Allow", "GET, POST")
-			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "memory bridge supports GET and POST")
+	return &sseToStreamableHTTPBridge{
+		target:       target,
+		publicPath:   publicPath,
+		upstreamPath: upstreamPath,
+		transport:    newEdgeTransport(insecureSkipVerify),
+		logger:       logger,
+		sessions:     make(map[string]*upstreamSSESession),
+	}
+}
+
+type sseToStreamableHTTPBridge struct {
+	target       *url.URL
+	publicPath   string
+	upstreamPath string
+	transport    http.RoundTripper
+	logger       zerolog.Logger
+
+	mu       sync.Mutex
+	sessions map[string]*upstreamSSESession
+}
+
+type upstreamSSESession struct {
+	id       string
+	endpoint *url.URL
+	reader   *bufio.Reader
+	close    func()
+	mu       sync.Mutex
+	lastUsed time.Time
+}
+
+func (b *sseToStreamableHTTPBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		b.handlePost(w, r)
+	case http.MethodGet:
+		bridgeStreamableGet(w, r, b.target, b.publicPath, b.upstreamPath, b.transport, b.logger)
+	case http.MethodDelete:
+		b.handleDelete(w, r)
+	default:
+		w.Header().Set("Allow", "DELETE, GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "memory bridge supports DELETE, GET, and POST")
+	}
+}
+
+func (b *sseToStreamableHTTPBridge) handlePost(w http.ResponseWriter, r *http.Request) {
+	requestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_body", "unable to read request body")
+		return
+	}
+	if jsonRPCBatch(requestBody) {
+		writeJSONError(w, http.StatusBadRequest, "unsupported_batch", "memory bridge does not support JSON-RPC batch requests")
+		return
+	}
+
+	method, _ := jsonRPCMethod(requestBody)
+	sessionID := strings.TrimSpace(r.Header.Get("MCP-Session-Id"))
+	session, err := b.sessionForRequest(r, sessionID, method == "initialize")
+	if err != nil {
+		if errors.Is(err, errSSEBridgeSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "session_not_found", "memory bridge session is not initialized")
+			return
 		}
-	})
+		b.logger.Error().Err(err).Str("path", r.URL.Path).Msg("sse bridge failed to establish upstream session")
+		if isCanceledError(err) {
+			return
+		}
+		if isTimeoutError(err) {
+			writeJSONError(w, http.StatusGatewayTimeout, "upstream_protocol_timeout", "memory upstream timed out before exposing an SSE endpoint")
+			return
+		}
+		writeJSONError(w, http.StatusBadGateway, "upstream_protocol_error", "memory upstream did not expose a usable SSE endpoint")
+		return
+	}
+	w.Header().Set("MCP-Session-Id", session.id)
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	b.forwardSessionPost(w, r, session, requestBody)
+}
+
+func (b *sseToStreamableHTTPBridge) handleDelete(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.Header.Get("MCP-Session-Id"))
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_session", "MCP-Session-Id header is required")
+		return
+	}
+	b.mu.Lock()
+	session := b.sessions[sessionID]
+	if session != nil {
+		delete(b.sessions, sessionID)
+	}
+	b.mu.Unlock()
+	if session != nil {
+		session.close()
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (b *sseToStreamableHTTPBridge) sessionForRequest(r *http.Request, sessionID string, initialize bool) (*upstreamSSESession, error) {
+	b.pruneIdleSessions(time.Now())
+	if sessionID != "" && !initialize {
+		b.mu.Lock()
+		session := b.sessions[sessionID]
+		if session != nil {
+			session.lastUsed = time.Now()
+		}
+		b.mu.Unlock()
+		if session != nil {
+			return session, nil
+		}
+		return nil, errSSEBridgeSessionNotFound
+	}
+
+	if sessionID == "" || initialize {
+		var err error
+		sessionID, err = randomSessionID()
+		if err != nil {
+			return nil, err
+		}
+	}
+	endpoint, reader, closeSSE, err := openUpstreamSSEEndpointWithContext(context.Background(), r, b.target, b.publicPath, b.upstreamPath, b.transport, b.logger)
+	if err != nil {
+		return nil, err
+	}
+	session := &upstreamSSESession{id: sessionID, endpoint: endpoint, reader: reader, close: closeSSE, lastUsed: time.Now()}
+	b.mu.Lock()
+	if old := b.sessions[sessionID]; old != nil {
+		old.close()
+	}
+	b.sessions[sessionID] = session
+	b.evictOldestLocked(sseBridgeMaxSessions)
+	b.mu.Unlock()
+	return session, nil
+}
+
+func (b *sseToStreamableHTTPBridge) pruneIdleSessions(now time.Time) {
+	b.mu.Lock()
+	var expired []*upstreamSSESession
+	for id, session := range b.sessions {
+		if now.Sub(session.lastUsed) > sseBridgeSessionIdleTimeout {
+			delete(b.sessions, id)
+			expired = append(expired, session)
+		}
+	}
+	b.mu.Unlock()
+	for _, session := range expired {
+		session.close()
+	}
+}
+
+func (b *sseToStreamableHTTPBridge) evictOldestLocked(maxSessions int) {
+	for len(b.sessions) > maxSessions {
+		var oldest *upstreamSSESession
+		for _, session := range b.sessions {
+			if oldest == nil || session.lastUsed.Before(oldest.lastUsed) {
+				oldest = session
+			}
+		}
+		if oldest == nil {
+			return
+		}
+		delete(b.sessions, oldest.id)
+		oldest.close()
+	}
+}
+
+func (b *sseToStreamableHTTPBridge) removeSession(session *upstreamSSESession) {
+	b.mu.Lock()
+	if b.sessions[session.id] == session {
+		delete(b.sessions, session.id)
+	}
+	b.mu.Unlock()
+	session.close()
+}
+
+func (b *sseToStreamableHTTPBridge) Close() {
+	b.mu.Lock()
+	sessions := make([]*upstreamSSESession, 0, len(b.sessions))
+	for _, session := range b.sessions {
+		sessions = append(sessions, session)
+	}
+	b.sessions = make(map[string]*upstreamSSESession)
+	b.mu.Unlock()
+	for _, session := range sessions {
+		session.close()
+	}
+}
+
+func (b *sseToStreamableHTTPBridge) forwardSessionPost(w http.ResponseWriter, r *http.Request, session *upstreamSSESession, requestBody []byte) {
+	postReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, session.endpoint.String(), bytes.NewReader(requestBody))
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", "unable to build upstream request")
+		return
+	}
+	postReq.Header = r.Header.Clone()
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("Accept", "application/json, text/event-stream")
+	sanitizeProxyHeaders(postReq.Header)
+	postReq.Host = b.target.Host
+
+	resp, err := b.transport.RoundTrip(postReq)
+	if err != nil {
+		b.logger.Error().Err(err).Str("path", r.URL.Path).Msg("sse bridge upstream POST failed")
+		b.removeSession(session)
+		writeUpstreamTransportError(w, err, "unable to reach upstream tenant service")
+		return
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		b.removeSession(session)
+		writeJSONError(w, http.StatusBadGateway, "upstream_proxy_failed", "unable to read upstream response")
+		return
+	}
+	if len(bytes.TrimSpace(responseBody)) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if _, hasRequestID := jsonRPCID(requestBody); !hasRequestID {
+			copyResponseHeaders(w.Header(), resp.Header)
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("MCP-Session-Id", session.id)
+			w.Header().Del("Content-Length")
+			w.WriteHeader(resp.StatusCode)
+			return
+		}
+		var waitErr error
+		responseBody, waitErr = readSSEJSONRPCResponse(r.Context(), session.reader, requestBody, session.close)
+		if waitErr != nil {
+			b.logger.Error().Err(waitErr).Str("path", r.URL.Path).Msg("sse bridge failed to read upstream JSON-RPC response")
+			b.removeSession(session)
+			if isCanceledError(waitErr) {
+				return
+			}
+			if isTimeoutError(waitErr) {
+				writeJSONError(w, http.StatusGatewayTimeout, "upstream_protocol_timeout", "memory upstream timed out before returning a JSON-RPC response")
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "upstream_protocol_error", "memory upstream did not return a JSON-RPC response")
+			return
+		}
+		resp.StatusCode = http.StatusOK
+		resp.Header.Set("Content-Type", "application/json")
+	}
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("MCP-Session-Id", session.id)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(responseBody)
 }
 
 func bridgeStreamablePost(w http.ResponseWriter, r *http.Request, target *url.URL, publicPath string, upstreamPath string, transport http.RoundTripper, logger zerolog.Logger) {
@@ -233,10 +479,14 @@ func copySSEWithoutEndpointEvents(w io.Writer, flusher http.Flusher, reader *buf
 }
 
 func openUpstreamSSEEndpoint(r *http.Request, target *url.URL, publicPath string, upstreamPath string, transport http.RoundTripper, logger zerolog.Logger) (*url.URL, *bufio.Reader, func(), error) {
+	return openUpstreamSSEEndpointWithContext(r.Context(), r, target, publicPath, upstreamPath, transport, logger)
+}
+
+func openUpstreamSSEEndpointWithContext(ctx context.Context, r *http.Request, target *url.URL, publicPath string, upstreamPath string, transport http.RoundTripper, logger zerolog.Logger) (*url.URL, *bufio.Reader, func(), error) {
 	upstreamURL := *target
 	upstreamURL.Path = rewriteProxyPath(publicPath, publicPath, upstreamPath)
 	upstreamURL.RawPath = upstreamURL.EscapedPath()
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL.String(), nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -379,6 +629,24 @@ func jsonRPCID(body []byte) (any, bool) {
 		return nil, false
 	}
 	return payload.ID, true
+}
+
+func jsonRPCMethod(body []byte) (string, bool) {
+	var payload struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.Method == "" {
+		return "", false
+	}
+	return payload.Method, true
+}
+
+func randomSessionID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func isTimeoutError(err error) bool {

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"dragonserver/mcp-platform/internal/catalog"
@@ -32,6 +34,8 @@ type Server struct {
 	stateStore                edgeStateStore
 	oauth                     *OAuthService
 	auth                      *AuthRuntime
+	bridgeMu                  sync.Mutex
+	sseBridges                map[string]http.Handler
 }
 
 func NewServer(cfg Config, logger zerolog.Logger, resolver Resolver) (*Server, error) {
@@ -100,10 +104,23 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		stateStore:                stateStore,
 		auth:                      authRuntime,
 		oauth:                     oauthService,
+		sseBridges:                make(map[string]http.Handler),
 	}, nil
 }
 
 func (s *Server) Close() error {
+	s.bridgeMu.Lock()
+	bridges := make([]http.Handler, 0, len(s.sseBridges))
+	for _, bridge := range s.sseBridges {
+		bridges = append(bridges, bridge)
+	}
+	s.sseBridges = make(map[string]http.Handler)
+	s.bridgeMu.Unlock()
+	for _, bridge := range bridges {
+		if closer, ok := bridge.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
 	if s.stateStore == nil {
 		return nil
 	}
@@ -363,12 +380,10 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 		})
 
 		if service.AdapterRequirement == catalog.AdapterRequirementSSEToStreamableHTTP {
-			bridge := NewSSEToStreamableHTTPBridge(
+			bridge := s.sseBridge(
 				target.BaseURL,
 				service.PublicPath,
 				service.InternalUpstreamPath,
-				s.fixtureInsecureSkipVerify,
-				s.logger,
 			)
 			bridge.ServeHTTP(w, r)
 			return
@@ -383,6 +398,24 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 		)
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+func (s *Server) sseBridge(target *url.URL, publicPath string, upstreamPath string) http.Handler {
+	key := target.String() + "|" + publicPath + "|" + upstreamPath
+	s.bridgeMu.Lock()
+	defer s.bridgeMu.Unlock()
+	bridge := s.sseBridges[key]
+	if bridge == nil {
+		bridge = NewSSEToStreamableHTTPBridge(
+			target,
+			publicPath,
+			upstreamPath,
+			s.fixtureInsecureSkipVerify,
+			s.logger,
+		)
+		s.sseBridges[key] = bridge
+	}
+	return bridge
 }
 
 func (s *Server) bearerChallenge(service catalog.ServiceCatalogEntry, errorCode string) string {
