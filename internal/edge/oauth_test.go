@@ -256,6 +256,113 @@ func TestDesktopClientOAuthSmokeUsesDiscoveryResourceAndLoopbackRedirect(t *test
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
 }
 
+func TestOAuthAuthorizeAndTokenDeriveMissingResourceFromSingleScope(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/mcp", r.URL.Path)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	server := newTestEdgeServer(t, urlResolver{targets: map[string]string{"mealie": upstream.URL}})
+	handler := server.Handler()
+	redirectURI := "https://client.example.com/oauth/callback"
+	resource := "https://mcp.example.com/mealie/mcp"
+	scope := "mcp:mealie"
+
+	registrationBody := `{
+		"client_name":"grok-smoke-client",
+		"redirect_uris":["` + redirectURI + `"],
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"token_endpoint_auth_method":"none",
+		"scope":"` + scope + `"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(registrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+
+	authorizeRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
+			"&redirect_uri="+url.QueryEscape(redirectURI)+
+			"&scope="+url.QueryEscape(scope)+
+			"&state="+url.QueryEscape("grok-state")+
+			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
+			"&code_challenge_method=S256",
+		nil,
+	)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, authorizeRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+
+	loginRedirect, err := url.Parse(res.Header().Get("Location"))
+	require.NoError(t, err)
+	callbackRequest := httptest.NewRequest(http.MethodGet, loginRedirect.String(), nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, callbackRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+	require.NotEmpty(t, res.Result().Cookies())
+
+	callbackRequest = httptest.NewRequest(http.MethodGet, res.Header().Get("Location"), nil)
+	callbackRequest.AddCookie(res.Result().Cookies()[0])
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, callbackRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+
+	redirectLocation, err := url.Parse(res.Header().Get("Location"))
+	require.NoError(t, err)
+	require.Equal(t, redirectURI, redirectLocation.Scheme+"://"+redirectLocation.Host+redirectLocation.Path)
+	require.Equal(t, "grok-state", redirectLocation.Query().Get("state"))
+	authCode := redirectLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+
+	tokenForm := url.Values{}
+	tokenForm.Set("grant_type", "authorization_code")
+	tokenForm.Set("code", authCode)
+	tokenForm.Set("redirect_uri", redirectURI)
+	tokenForm.Set("client_id", registration.ClientID)
+	tokenForm.Set("code_verifier", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+
+	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var tokenPayload map[string]any
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &tokenPayload))
+	accessToken, ok := tokenPayload["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+
+	introspectionForm := url.Values{"token": {accessToken}}
+	req = httptest.NewRequest(http.MethodPost, "/oauth/introspect", strings.NewReader(introspectionForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var introspection tokenIntrospectionResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &introspection))
+	require.True(t, introspection.Active)
+	require.Equal(t, scope, introspection.Scope)
+	require.Equal(t, resource, introspection.Resource)
+
+	serviceRequest := httptest.NewRequest(http.MethodGet, "/mealie/mcp", nil)
+	serviceRequest.Header.Set("Authorization", "Bearer "+accessToken)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, serviceRequest)
+	require.Equal(t, http.StatusOK, res.Code)
+	require.JSONEq(t, `{"ok":true}`, res.Body.String())
+}
+
 func TestOAuthRegistrationAllowsDeviceOnlyClientWithoutRedirectURI(t *testing.T) {
 	server := newTestEdgeServer(t, nil)
 	handler := server.Handler()

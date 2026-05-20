@@ -145,11 +145,23 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 	if strings.TrimSpace(operatorToken) == "" {
 		return nil, fmt.Errorf("mcp-edge operator token is required to protect registration and introspection endpoints")
 	}
+	publicBaseURL := strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
 	manager := manage.NewDefaultManager()
 	manager.MapTokenStorage(stateStore)
 	manager.MapClientStorage(stateStore)
 	manager.SetExtractExtensionHandler(func(tgr *oauth2.TokenGenerateRequest, ti oauth2.ExtendableTokenInfo) {
-		setTokenInfoResource(ti, tgr.Request.FormValue("resource"))
+		resource := ""
+		if tgr.Request != nil {
+			resource = tgr.Request.FormValue("resource")
+		}
+		if strings.TrimSpace(resource) == "" && tokenInfoResource(ti) == "" {
+			if serviceID, err := singleServiceFromScope(tgr.Scope); err == nil {
+				if service, ok := catalogCache.ServiceByID(serviceID); ok {
+					resource = publicBaseURL + service.PublicPath
+				}
+			}
+		}
+		setTokenInfoResource(ti, resource)
 	})
 	manager.SetValidateURIHandler(func(baseURI, redirectURI string) error {
 		redirectURI = strings.TrimSpace(redirectURI)
@@ -187,7 +199,7 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 
 	return &OAuthService{
 		logger:        logger,
-		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
+		publicBaseURL: publicBaseURL,
 		operatorToken: operatorToken,
 		catalog:       catalogCache,
 		grants:        grants,
@@ -1218,23 +1230,23 @@ func (o *OAuthService) validateResourceIndicator(r *http.Request, scope string) 
 	if err := r.ParseForm(); err != nil {
 		return "", fmt.Errorf("unable to parse request parameters")
 	}
-	resources := r.Form["resource"]
-	if len(resources) != 1 || strings.TrimSpace(resources[0]) == "" {
-		return "", fmt.Errorf("exactly one resource indicator is required")
-	}
-	resource := strings.TrimRight(strings.TrimSpace(resources[0]), "/")
-	serviceID, err := singleServiceFromScope(scope)
+	expectedResource, err := o.resourceForSingleServiceScope(scope)
 	if err != nil {
 		return "", err
 	}
-	service, ok := o.catalog.ServiceByID(serviceID)
-	if !ok {
-		return "", fmt.Errorf("requested resource scope is not supported")
+	resources := r.Form["resource"]
+	if len(resources) == 0 || len(resources) == 1 && strings.TrimSpace(resources[0]) == "" {
+		setRequestResourceIndicator(r, expectedResource)
+		return expectedResource, nil
 	}
-	expectedResource := o.publicBaseURL + service.PublicPath
+	if len(resources) != 1 {
+		return "", fmt.Errorf("exactly one resource indicator is required")
+	}
+	resource := strings.TrimRight(strings.TrimSpace(resources[0]), "/")
 	if resource != expectedResource {
 		return "", fmt.Errorf("resource indicator must match the requested MCP service")
 	}
+	setRequestResourceIndicator(r, expectedResource)
 	return expectedResource, nil
 }
 
@@ -1243,7 +1255,18 @@ func (o *OAuthService) validateTokenResourceIndicator(r *http.Request) (string, 
 		return "", fmt.Errorf("unable to parse form body")
 	}
 	resources := r.Form["resource"]
-	if len(resources) != 1 || strings.TrimSpace(resources[0]) == "" {
+	if len(resources) == 0 || len(resources) == 1 && strings.TrimSpace(resources[0]) == "" {
+		if scope := strings.TrimSpace(r.Form.Get("scope")); scope != "" {
+			resource, err := o.resourceForSingleServiceScope(scope)
+			if err != nil {
+				return "", err
+			}
+			setRequestResourceIndicator(r, resource)
+			return resource, nil
+		}
+		return "", nil
+	}
+	if len(resources) != 1 {
 		return "", fmt.Errorf("exactly one resource indicator is required")
 	}
 	resource := strings.TrimRight(strings.TrimSpace(resources[0]), "/")
@@ -1251,10 +1274,36 @@ func (o *OAuthService) validateTokenResourceIndicator(r *http.Request) (string, 
 		serviceID := strings.TrimPrefix(scope, "mcp:")
 		service, ok := o.catalog.ServiceByID(serviceID)
 		if ok && resource == o.publicBaseURL+service.PublicPath {
+			setRequestResourceIndicator(r, resource)
 			return resource, nil
 		}
 	}
 	return "", fmt.Errorf("resource indicator is not registered on this edge")
+}
+
+func (o *OAuthService) resourceForSingleServiceScope(scope string) (string, error) {
+	serviceID, err := singleServiceFromScope(scope)
+	if err != nil {
+		return "", err
+	}
+	service, ok := o.catalog.ServiceByID(serviceID)
+	if !ok {
+		return "", fmt.Errorf("requested resource scope is not supported")
+	}
+	return o.publicBaseURL + service.PublicPath, nil
+}
+
+func setRequestResourceIndicator(r *http.Request, resource string) {
+	resource = strings.TrimRight(strings.TrimSpace(resource), "/")
+	if resource == "" {
+		return
+	}
+	if r.Form != nil {
+		r.Form.Set("resource", resource)
+	}
+	if r.PostForm != nil {
+		r.PostForm.Set("resource", resource)
+	}
 }
 
 func singleServiceFromScope(scope string) (string, error) {
