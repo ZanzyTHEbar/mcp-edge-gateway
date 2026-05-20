@@ -41,8 +41,18 @@ func TestSQLiteEdgeStateStoreRoundTrip(t *testing.T) {
 	require.NotEmpty(t, entries)
 
 	now := time.Now().UTC().Round(0)
-	claims := IdentityClaims{Sub: "sqlite-fixture-user", Email: "fixture@example.com", Name: "Fixture User", PreferredUsername: "fixture-user", Groups: []string{"mcp-users", "mcp-service-mealie"}}
+	claims := IdentityClaims{Sub: "sqlite-fixture-user", Email: "fixture@example.com", Name: "Fixture User", PreferredUsername: "fixture-user", AccountBindingID: "stable-user-id", AccountBindingClaim: "dragonserver_user_id", Groups: []string{"mcp-users", "mcp-service-mealie"}}
 	require.NoError(t, storeValue.UpsertSubject(ctx, claims))
+	gotClaims, ok, err := storeValue.GetSubjectIdentity(ctx, claims.Sub)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, claims.Sub, gotClaims.Sub)
+	require.Equal(t, domain.DeriveSubjectKey(claims.Sub), gotClaims.SubjectKey)
+	require.Equal(t, claims.Email, gotClaims.Email)
+	require.Equal(t, claims.Name, gotClaims.Name)
+	require.Equal(t, claims.PreferredUsername, gotClaims.PreferredUsername)
+	require.Equal(t, claims.AccountBindingID, gotClaims.AccountBindingID)
+	require.Equal(t, claims.AccountBindingClaim, gotClaims.AccountBindingClaim)
 	require.NoError(t, cpStore.ReplaceSubjectGrants(ctx, claims.Sub, []controlplane.ServiceGrant{{SubjectSub: claims.Sub, ServiceID: "mealie", SourceGroup: "mcp-service-mealie", GrantedAt: now, LastSyncedAt: now}}))
 
 	allowed, err := storeValue.Allowed(ctx, claims.Sub, "mealie")

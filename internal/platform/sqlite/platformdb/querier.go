@@ -229,13 +229,15 @@ type Querier interface {
 	DisableServiceCatalogEntry(ctx context.Context, arg DisableServiceCatalogEntryParams) error
 	//EdgeUpsertSubject
 	//
-	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
-	//  VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, created_at, updated_at)
+	//  VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), NULLIF(?6, ''), NULLIF(?7, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(subject_sub) DO UPDATE SET
 	//      subject_key = excluded.subject_key,
 	//      preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
 	//      email = COALESCE(excluded.email, subjects.email),
 	//      display_name = COALESCE(excluded.display_name, subjects.display_name),
+	//      account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+	//      account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
 	//      last_synced_at = CURRENT_TIMESTAMP,
 	//      updated_at = CURRENT_TIMESTAMP
 	EdgeUpsertSubject(ctx context.Context, arg EdgeUpsertSubjectParams) error
@@ -320,6 +322,7 @@ type Querier interface {
 	//      persistence_policy,
 	//      adapter_requirement,
 	//      secret_contract,
+	//      identity_context,
 	//      enabled,
 	//      source,
 	//      created_at,
@@ -373,6 +376,7 @@ type Querier interface {
 	//      persistence_policy,
 	//      adapter_requirement,
 	//      secret_contract,
+	//      identity_context,
 	//      enabled,
 	//      source,
 	//      created_at,
@@ -386,7 +390,9 @@ type Querier interface {
 	//         subject_key,
 	//         preferred_username,
 	//         email,
-	//         display_name
+	//         display_name,
+	//         account_binding_id,
+	//         account_binding_claim
 	//  FROM subjects
 	//  WHERE subject_sub = ?1
 	GetSubject(ctx context.Context, arg GetSubjectParams) (GetSubjectRow, error)
@@ -442,6 +448,8 @@ type Querier interface {
 	//         COALESCE(subjects.preferred_username, '') AS preferred_username,
 	//         COALESCE(subjects.email, '') AS email,
 	//         COALESCE(subjects.display_name, '') AS display_name,
+	//         COALESCE(subjects.account_binding_id, '') AS account_binding_id,
+	//         COALESCE(subjects.account_binding_claim, '') AS account_binding_claim,
 	//         service_grants.service_id
 	//  FROM service_grants
 	//  JOIN subjects ON subjects.subject_sub = service_grants.subject_sub
@@ -464,6 +472,7 @@ type Querier interface {
 	//      persistence_policy,
 	//      adapter_requirement,
 	//      secret_contract,
+	//      identity_context,
 	//      enabled,
 	//      source,
 	//      created_at,
@@ -494,6 +503,7 @@ type Querier interface {
 	//      persistence_policy,
 	//      adapter_requirement,
 	//      secret_contract,
+	//      identity_context,
 	//      enabled,
 	//      source,
 	//      created_at,
@@ -672,6 +682,7 @@ type Querier interface {
 	//      persistence_policy,
 	//      adapter_requirement,
 	//      secret_contract,
+	//      identity_context,
 	//      enabled,
 	//      source,
 	//      updated_at
@@ -692,6 +703,7 @@ type Querier interface {
 	//      ?13,
 	//      ?14,
 	//      ?15,
+	//      ?16,
 	//      CURRENT_TIMESTAMP
 	//  )
 	//  ON CONFLICT(service_id) DO UPDATE SET
@@ -708,6 +720,7 @@ type Querier interface {
 	//      adapter_requirement = excluded.adapter_requirement,
 	//      enabled = excluded.enabled,
 	//      secret_contract = excluded.secret_contract,
+	//      identity_context = excluded.identity_context,
 	//      source = excluded.source,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error
@@ -757,25 +770,29 @@ type Querier interface {
 	UpsertStaticTenantUpstream(ctx context.Context, arg UpsertStaticTenantUpstreamParams) error
 	//UpsertSubject
 	//
-	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-	//  VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+	//  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(subject_sub) DO UPDATE SET
 	//      subject_key = excluded.subject_key,
 	//      preferred_username = excluded.preferred_username,
 	//      email = excluded.email,
 	//      display_name = excluded.display_name,
+	//  	account_binding_id = excluded.account_binding_id,
+	//  	account_binding_claim = excluded.account_binding_claim,
 	//      last_synced_at = CURRENT_TIMESTAMP,
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertSubject(ctx context.Context, arg UpsertSubjectParams) error
 	//UpsertSubjectPreservingMetadata
 	//
-	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-	//  VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	//  INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+	//  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	//  ON CONFLICT(subject_sub) DO UPDATE SET
 	//      subject_key = subjects.subject_key,
 	//      preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
 	//      email = COALESCE(excluded.email, subjects.email),
 	//      display_name = COALESCE(excluded.display_name, subjects.display_name),
+	//  	account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+	//  	account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
 	//      updated_at = CURRENT_TIMESTAMP
 	UpsertSubjectPreservingMetadata(ctx context.Context, arg UpsertSubjectPreservingMetadataParams) error
 }

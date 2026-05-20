@@ -59,13 +59,19 @@ func TestMemoryEdgeStateStoreRoundTrip(t *testing.T) {
 
 	now := time.Now().UTC()
 	claims := IdentityClaims{
-		Sub:               "fixture-user",
-		Email:             "fixture@example.com",
-		Name:              "Fixture User",
-		PreferredUsername: "fixture-user",
-		Groups:            []string{"mcp-users", "mcp-service-mealie"},
+		Sub:                 "fixture-user",
+		Email:               "fixture@example.com",
+		Name:                "Fixture User",
+		PreferredUsername:   "fixture-user",
+		AccountBindingID:    "stable-user-id",
+		AccountBindingClaim: "dragonserver_user_id",
+		Groups:              []string{"mcp-users", "mcp-service-mealie"},
 	}
 	require.NoError(t, storeValue.UpsertSubject(context.Background(), claims))
+	gotClaims, ok, err := storeValue.GetSubjectIdentity(context.Background(), claims.Sub)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, claims, gotClaims)
 
 	allowed, err := storeValue.Allowed(context.Background(), claims.Sub, "mealie")
 	require.NoError(t, err)

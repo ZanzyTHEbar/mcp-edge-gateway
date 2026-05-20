@@ -57,6 +57,38 @@ func TestStreamSafeReverseProxyForwardsMCPTransportHeaders(t *testing.T) {
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
 }
 
+func TestStreamSafeReverseProxyReplacesSpoofedIdentityHeaders(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "trusted-sub", r.Header.Get(subjectHeaderSub))
+		require.Equal(t, "trusted-signature", r.Header.Get(identityHeaderSignature))
+		require.Empty(t, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	defer upstream.CloseClientConnections()
+
+	targetURL, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+
+	identityHeaders := http.Header{}
+	identityHeaders.Set(subjectHeaderSub, "trusted-sub")
+	identityHeaders.Set(identityHeaderSignature, "trusted-signature")
+
+	handler := NewStreamSafeReverseProxy(targetURL, "/penpot/mcp", "/mcp", false, zerolog.New(io.Discard))
+	req := httptest.NewRequest(http.MethodPost, "/penpot/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/list","id":1}`)))
+	req.Header.Set("Authorization", "Bearer local-token")
+	req.Header.Set(subjectHeaderSub, "spoofed-sub")
+	req.Header.Set(identityHeaderSignature, "spoofed-signature")
+	req = req.WithContext(withUpstreamIdentityHeaders(req.Context(), identityHeaders))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+}
+
 func TestSSEToStreamableHTTPBridgeDoesNotWaitForNotificationResponse(t *testing.T) {
 	t.Parallel()
 

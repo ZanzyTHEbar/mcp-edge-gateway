@@ -43,6 +43,7 @@ func NewStreamSafeReverseProxy(target *url.URL, publicPath string, upstreamPath 
 		req.Out.Host = target.Host
 		req.SetXForwarded()
 		sanitizeProxyHeaders(req.Out.Header)
+		applyUpstreamIdentityHeaders(req.Out.Header, req.In.Context())
 		req.Out.URL.Path = rewriteProxyPath(req.In.URL.Path, publicPath, upstreamPath)
 		req.Out.URL.RawPath = req.Out.URL.EscapedPath()
 		req.Out.URL.RawQuery = req.In.URL.RawQuery
@@ -259,6 +260,7 @@ func (b *sseToStreamableHTTPBridge) forwardSessionPost(w http.ResponseWriter, r 
 	postReq.Header.Set("Content-Type", "application/json")
 	postReq.Header.Set("Accept", "application/json, text/event-stream")
 	sanitizeProxyHeaders(postReq.Header)
+	applyUpstreamIdentityHeaders(postReq.Header, r.Context())
 	postReq.Host = b.target.Host
 
 	resp, err := b.transport.RoundTrip(postReq)
@@ -344,6 +346,7 @@ func bridgeStreamablePost(w http.ResponseWriter, r *http.Request, target *url.UR
 	postReq.Header.Set("Content-Type", "application/json")
 	postReq.Header.Set("Accept", "application/json, text/event-stream")
 	sanitizeProxyHeaders(postReq.Header)
+	applyUpstreamIdentityHeaders(postReq.Header, r.Context())
 	postReq.Host = target.Host
 
 	resp, err := transport.RoundTrip(postReq)
@@ -403,6 +406,7 @@ func bridgeStreamableGet(w http.ResponseWriter, r *http.Request, target *url.URL
 	req.Header = r.Header.Clone()
 	req.Header.Set("Accept", "text/event-stream")
 	sanitizeProxyHeaders(req.Header)
+	applyUpstreamIdentityHeaders(req.Header, r.Context())
 	req.Host = target.Host
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -493,6 +497,7 @@ func openUpstreamSSEEndpointWithContext(ctx context.Context, r *http.Request, ta
 	req.Header = r.Header.Clone()
 	req.Header.Set("Accept", "text/event-stream")
 	sanitizeProxyHeaders(req.Header)
+	applyUpstreamIdentityHeaders(req.Header, r.Context())
 	req.Host = target.Host
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -710,6 +715,7 @@ func sanitizeProxyHeaders(header http.Header) {
 	header.Del("Authorization")
 	header.Del("Cookie")
 	header.Del("Accept-Encoding")
+	stripIdentityContextHeaders(header)
 	header.Set("Cache-Control", "no-store")
 }
 

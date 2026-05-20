@@ -20,6 +20,28 @@ type SecretDefinition struct {
 	Required bool
 }
 
+type IdentityContextMode string
+
+const (
+	IdentityContextModeNone          IdentityContextMode = "none"
+	IdentityContextModeSignedHeaders IdentityContextMode = "signed-headers"
+)
+
+type IdentityContextConfig struct {
+	Mode IdentityContextMode `json:"mode"`
+}
+
+func (c IdentityContextConfig) Normalized() IdentityContextConfig {
+	if c.Mode == "" {
+		c.Mode = IdentityContextModeNone
+	}
+	return c
+}
+
+func (c IdentityContextConfig) Enabled() bool {
+	return c.Normalized().Mode != IdentityContextModeNone
+}
+
 type ServiceCatalogEntry struct {
 	ServiceID              string
 	DisplayName            string
@@ -34,6 +56,7 @@ type ServiceCatalogEntry struct {
 	PersistencePolicy      string
 	AdapterRequirement     AdapterRequirement
 	SecretContract         []SecretDefinition
+	IdentityContext        IdentityContextConfig
 }
 
 func DefaultCatalogV1() []ServiceCatalogEntry {

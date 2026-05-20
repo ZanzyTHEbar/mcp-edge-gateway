@@ -608,34 +608,40 @@ func (q *Queries) DenyDeviceAuthorization(ctx context.Context, arg DenyDeviceAut
 }
 
 const EdgeUpsertSubject = `-- name: EdgeUpsertSubject :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
-VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, created_at, updated_at)
+VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), NULLIF(?6, ''), NULLIF(?7, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = excluded.subject_key,
     preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
     email = COALESCE(excluded.email, subjects.email),
     display_name = COALESCE(excluded.display_name, subjects.display_name),
+    account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+    account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
     last_synced_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 `
 
 type EdgeUpsertSubjectParams struct {
-	SubjectSub        string      `db:"subject_sub" json:"subject_sub"`
-	SubjectKey        string      `db:"subject_key" json:"subject_key"`
-	PreferredUsername interface{} `db:"preferred_username" json:"preferred_username"`
-	Email             interface{} `db:"email" json:"email"`
-	DisplayName       interface{} `db:"display_name" json:"display_name"`
+	SubjectSub          string      `db:"subject_sub" json:"subject_sub"`
+	SubjectKey          string      `db:"subject_key" json:"subject_key"`
+	PreferredUsername   interface{} `db:"preferred_username" json:"preferred_username"`
+	Email               interface{} `db:"email" json:"email"`
+	DisplayName         interface{} `db:"display_name" json:"display_name"`
+	AccountBindingID    interface{} `db:"account_binding_id" json:"account_binding_id"`
+	AccountBindingClaim interface{} `db:"account_binding_claim" json:"account_binding_claim"`
 }
 
 // EdgeUpsertSubject
 //
-//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
-//	VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, created_at, updated_at)
+//	VALUES (?1, ?2, NULLIF(?3, ''), NULLIF(?4, ''), NULLIF(?5, ''), NULLIF(?6, ''), NULLIF(?7, ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 //	ON CONFLICT(subject_sub) DO UPDATE SET
 //	    subject_key = excluded.subject_key,
 //	    preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
 //	    email = COALESCE(excluded.email, subjects.email),
 //	    display_name = COALESCE(excluded.display_name, subjects.display_name),
+//	    account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+//	    account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
 //	    last_synced_at = CURRENT_TIMESTAMP,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) EdgeUpsertSubject(ctx context.Context, arg EdgeUpsertSubjectParams) error {
@@ -645,6 +651,8 @@ func (q *Queries) EdgeUpsertSubject(ctx context.Context, arg EdgeUpsertSubjectPa
 		arg.PreferredUsername,
 		arg.Email,
 		arg.DisplayName,
+		arg.AccountBindingID,
+		arg.AccountBindingClaim,
 	)
 	return err
 }

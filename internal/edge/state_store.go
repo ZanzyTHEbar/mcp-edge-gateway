@@ -72,6 +72,7 @@ type edgeStateStore interface {
 	PutBrowserSession(context.Context, string, browserSession) error
 	GetBrowserSession(context.Context, string, time.Time) (browserSession, bool, error)
 	UpsertSubject(context.Context, IdentityClaims) error
+	GetSubjectIdentity(context.Context, string) (IdentityClaims, bool, error)
 	ListEnabledServiceCatalog(context.Context) ([]catalog.ServiceCatalogEntry, error)
 	RecordAuditEvent(context.Context, edgeAuditEvent) error
 	Ping(context.Context) error
@@ -623,6 +624,13 @@ func (s *memoryEdgeStateStore) UpsertSubject(_ context.Context, claims IdentityC
 	return nil
 }
 
+func (s *memoryEdgeStateStore) GetSubjectIdentity(_ context.Context, subjectSub string) (IdentityClaims, bool, error) {
+	s.mu.RLock()
+	claims, ok := s.subjects[subjectSub]
+	s.mu.RUnlock()
+	return claims, ok, nil
+}
+
 func (s *memoryEdgeStateStore) Allowed(_ context.Context, subjectSub string, serviceID string) (bool, error) {
 	s.mu.RLock()
 	claims, ok := s.subjects[subjectSub]
@@ -816,6 +824,13 @@ func stringPtrFromNull(value sql.NullString) *string {
 		return nil
 	}
 	return &value.String
+}
+
+func stringFromNull(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func timePtrFromNull(value sql.NullString) *time.Time {
@@ -1465,6 +1480,25 @@ func (s *sqliteEdgeStateStore) UpsertSubject(ctx context.Context, claims Identit
 	return s.ensureSubject(ctx, claims)
 }
 
+func (s *sqliteEdgeStateStore) GetSubjectIdentity(ctx context.Context, subjectSub string) (IdentityClaims, bool, error) {
+	row, err := s.queries.GetSubject(ctx, platformdb.GetSubjectParams{SubjectSub: subjectSub})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return IdentityClaims{}, false, nil
+		}
+		return IdentityClaims{}, false, fmt.Errorf("get subject identity %s: %w", subjectSub, err)
+	}
+	return IdentityClaims{
+		Sub:                 row.SubjectSub,
+		SubjectKey:          row.SubjectKey,
+		Email:               stringFromNull(row.Email),
+		Name:                stringFromNull(row.DisplayName),
+		PreferredUsername:   stringFromNull(row.PreferredUsername),
+		AccountBindingID:    stringFromNull(row.AccountBindingID),
+		AccountBindingClaim: stringFromNull(row.AccountBindingClaim),
+	}, true, nil
+}
+
 func (s *sqliteEdgeStateStore) Allowed(ctx context.Context, subjectSub string, serviceID string) (bool, error) {
 	allowed, err := s.queries.AllowedServiceGrant(ctx, platformdb.AllowedServiceGrantParams{SubjectSub: subjectSub, ServiceID: serviceID})
 	if err != nil {
@@ -1509,6 +1543,10 @@ func (s *sqliteEdgeStateStore) ListEnabledServiceCatalog(ctx context.Context) ([
 		if err := json.Unmarshal([]byte(row.SecretContract), &entry.SecretContract); err != nil {
 			return nil, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
 		}
+		if err := json.Unmarshal([]byte(row.IdentityContext), &entry.IdentityContext); err != nil {
+			return nil, fmt.Errorf("decode identity context for %s: %w", entry.ServiceID, err)
+		}
+		entry.IdentityContext = entry.IdentityContext.Normalized()
 		entries = append(entries, entry)
 	}
 	return entries, nil
@@ -1566,7 +1604,10 @@ func (s *sqliteEdgeStateStore) ensureSubject(ctx context.Context, claims Identit
 		return nil
 	}
 	subjectKey := domain.DeriveSubjectKey(sub)
-	if err := s.queries.EdgeUpsertSubject(ctx, platformdb.EdgeUpsertSubjectParams{SubjectSub: sub, SubjectKey: subjectKey, PreferredUsername: claims.PreferredUsername, Email: claims.Email, DisplayName: firstNonEmpty(strings.TrimSpace(claims.Name), strings.TrimSpace(claims.PreferredUsername))}); err != nil {
+	if strings.TrimSpace(claims.SubjectKey) != "" {
+		subjectKey = strings.TrimSpace(claims.SubjectKey)
+	}
+	if err := s.queries.EdgeUpsertSubject(ctx, platformdb.EdgeUpsertSubjectParams{SubjectSub: sub, SubjectKey: subjectKey, PreferredUsername: claims.PreferredUsername, Email: claims.Email, DisplayName: firstNonEmpty(strings.TrimSpace(claims.Name), strings.TrimSpace(claims.PreferredUsername)), AccountBindingID: claims.AccountBindingID, AccountBindingClaim: claims.AccountBindingClaim}); err != nil {
 		return fmt.Errorf("upsert subject %s: %w", sub, err)
 	}
 	return nil

@@ -19,6 +19,7 @@ const (
 	envEdgeFixtureAuthSubjectEmail        = "MCP_EDGE_FIXTURE_AUTH_SUBJECT_EMAIL"
 	envEdgeFixtureAuthSubjectName         = "MCP_EDGE_FIXTURE_AUTH_SUBJECT_NAME"
 	envEdgeFixtureAuthPreferredUsername   = "MCP_EDGE_FIXTURE_AUTH_PREFERRED_USERNAME"
+	envEdgeFixtureAuthAccountBindingID    = "MCP_EDGE_FIXTURE_AUTH_ACCOUNT_BINDING_ID"
 	envEdgeFixtureAuthGroups              = "MCP_EDGE_FIXTURE_AUTH_GROUPS"
 	envEdgeFixtureOperatorToken           = "MCP_EDGE_FIXTURE_OPERATOR_TOKEN"
 )
@@ -35,6 +36,8 @@ type Config struct {
 	AuthentikClientSecretPath      string
 	OperatorTokenPath              string
 	SessionEncryptionKeyPath       string
+	IdentityHeaderSecretPath       string
+	AccountBindingClaim            string
 	CookieSecure                   bool
 	CORSAllowedOrigins             []string
 	DCREnabled                     bool
@@ -48,6 +51,7 @@ type Config struct {
 	FixtureAuthSubjectEmail        string
 	FixtureAuthSubjectName         string
 	FixtureAuthPreferredUsername   string
+	FixtureAuthAccountBindingID    string
 	FixtureAuthGroups              []string
 	FixtureOperatorToken           string
 }
@@ -72,6 +76,8 @@ func LoadConfig() Config {
 		AuthentikClientSecretPath:      strings.TrimSpace(viper.GetString(contracts.EnvEdgeAuthentikClientSecretPath)),
 		OperatorTokenPath:              strings.TrimSpace(viper.GetString(contracts.EnvEdgeOperatorTokenPath)),
 		SessionEncryptionKeyPath:       strings.TrimSpace(viper.GetString(contracts.EnvEdgeSessionEncryptionKeyPath)),
+		IdentityHeaderSecretPath:       strings.TrimSpace(viper.GetString(contracts.EnvEdgeIdentityHeaderSecretPath)),
+		AccountBindingClaim:            strings.TrimSpace(viper.GetString(contracts.EnvEdgeAccountBindingClaim)),
 		CookieSecure:                   viper.GetBool(contracts.EnvEdgeCookieSecure),
 		CORSAllowedOrigins:             splitCommaSeparated(viper.GetString(contracts.EnvEdgeCORSAllowedOrigins)),
 		DCREnabled:                     viper.GetBool(contracts.EnvEdgeDCREnabled),
@@ -85,6 +91,7 @@ func LoadConfig() Config {
 		FixtureAuthSubjectEmail:        strings.TrimSpace(viper.GetString(envEdgeFixtureAuthSubjectEmail)),
 		FixtureAuthSubjectName:         strings.TrimSpace(viper.GetString(envEdgeFixtureAuthSubjectName)),
 		FixtureAuthPreferredUsername:   strings.TrimSpace(viper.GetString(envEdgeFixtureAuthPreferredUsername)),
+		FixtureAuthAccountBindingID:    strings.TrimSpace(viper.GetString(envEdgeFixtureAuthAccountBindingID)),
 		FixtureAuthGroups:              splitCommaSeparated(viper.GetString(envEdgeFixtureAuthGroups)),
 		FixtureOperatorToken:           strings.TrimSpace(viper.GetString(envEdgeFixtureOperatorToken)),
 	}
@@ -129,6 +136,7 @@ func (c Config) usesFixtureInputs() bool {
 		c.FixtureAuthSubjectEmail != "" ||
 		c.FixtureAuthSubjectName != "" ||
 		c.FixtureAuthPreferredUsername != "" ||
+		c.FixtureAuthAccountBindingID != "" ||
 		len(c.FixtureAuthGroups) > 0 ||
 		c.FixtureOperatorToken != ""
 }

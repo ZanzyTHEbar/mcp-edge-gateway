@@ -25,11 +25,14 @@ const (
 )
 
 type IdentityClaims struct {
-	Sub               string
-	Email             string
-	Name              string
-	PreferredUsername string
-	Groups            []string
+	Sub                 string
+	SubjectKey          string
+	Email               string
+	Name                string
+	PreferredUsername   string
+	AccountBindingID    string
+	AccountBindingClaim string
+	Groups              []string
 }
 
 type GrantAuthorizer interface {
@@ -70,11 +73,12 @@ type fixtureDelegatedAuthenticator struct {
 }
 
 type oidcDelegatedAuthenticator struct {
-	logger       zerolog.Logger
-	issuerURL    string
-	clientID     string
-	clientSecret string
-	callbackURL  string
+	logger              zerolog.Logger
+	issuerURL           string
+	clientID            string
+	clientSecret        string
+	callbackURL         string
+	accountBindingClaim string
 
 	mu          sync.Mutex
 	provider    *oidc.Provider
@@ -113,11 +117,12 @@ func NewAuthRuntime(cfg Config, logger zerolog.Logger, stateStore edgeStateStore
 			return nil, secretErr
 		}
 		runtime.authenticator = &oidcDelegatedAuthenticator{
-			logger:       logger,
-			issuerURL:    strings.TrimSpace(cfg.AuthentikIssuerURL),
-			clientID:     strings.TrimSpace(cfg.AuthentikClientID),
-			clientSecret: clientSecret,
-			callbackURL:  callbackURL,
+			logger:              logger,
+			issuerURL:           strings.TrimSpace(cfg.AuthentikIssuerURL),
+			clientID:            strings.TrimSpace(cfg.AuthentikClientID),
+			clientSecret:        clientSecret,
+			callbackURL:         callbackURL,
+			accountBindingClaim: strings.TrimSpace(cfg.AccountBindingClaim),
 		}
 		return runtime, nil
 	}
@@ -126,11 +131,13 @@ func NewAuthRuntime(cfg Config, logger zerolog.Logger, stateStore edgeStateStore
 	}
 
 	claims := IdentityClaims{
-		Sub:               firstNonEmpty(cfg.FixtureAuthSubjectSub, "fixture-user"),
-		Email:             firstNonEmpty(cfg.FixtureAuthSubjectEmail, "fixture-user@example.com"),
-		Name:              firstNonEmpty(cfg.FixtureAuthSubjectName, "Fixture User"),
-		PreferredUsername: firstNonEmpty(cfg.FixtureAuthPreferredUsername, "fixture-user"),
-		Groups:            cfg.FixtureAuthGroups,
+		Sub:                 firstNonEmpty(cfg.FixtureAuthSubjectSub, "fixture-user"),
+		Email:               firstNonEmpty(cfg.FixtureAuthSubjectEmail, "fixture-user@example.com"),
+		Name:                firstNonEmpty(cfg.FixtureAuthSubjectName, "Fixture User"),
+		PreferredUsername:   firstNonEmpty(cfg.FixtureAuthPreferredUsername, "fixture-user"),
+		AccountBindingID:    cfg.FixtureAuthAccountBindingID,
+		AccountBindingClaim: strings.TrimSpace(cfg.AccountBindingClaim),
+		Groups:              cfg.FixtureAuthGroups,
 	}
 	if len(claims.Groups) == 0 {
 		claims.Groups = []string{groupMCPUsers, grantGroupForService("mealie")}
@@ -165,11 +172,14 @@ func (a *AuthRuntime) InjectBrowserSubject(r *http.Request) *http.Request {
 	}
 
 	return r.WithContext(WithAuthenticatedSubject(r.Context(), AuthenticatedSubject{
-		Sub:               session.Claims.Sub,
-		Email:             session.Claims.Email,
-		DisplayName:       session.Claims.Name,
-		PreferredUsername: session.Claims.PreferredUsername,
-		Groups:            append([]string(nil), session.Claims.Groups...),
+		Sub:                 session.Claims.Sub,
+		SubjectKey:          session.Claims.SubjectKey,
+		Email:               session.Claims.Email,
+		DisplayName:         session.Claims.Name,
+		PreferredUsername:   session.Claims.PreferredUsername,
+		AccountBindingID:    session.Claims.AccountBindingID,
+		AccountBindingClaim: session.Claims.AccountBindingClaim,
+		Groups:              append([]string(nil), session.Claims.Groups...),
 	}))
 }
 
@@ -402,14 +412,38 @@ func (o *oidcDelegatedAuthenticator) Complete(ctx context.Context, r *http.Reque
 	if claims.Nonce != pending.Nonce {
 		return IdentityClaims{}, fmt.Errorf("delegated login nonce mismatch")
 	}
+	accountBindingID := ""
+	accountBindingClaim := strings.TrimSpace(o.accountBindingClaim)
+	if accountBindingClaim != "" {
+		var rawClaims map[string]any
+		if err := idToken.Claims(&rawClaims); err != nil {
+			return IdentityClaims{}, err
+		}
+		accountBindingID = claimString(rawClaims[accountBindingClaim])
+	}
 
 	return IdentityClaims{
-		Sub:               claims.Sub,
-		Email:             claims.Email,
-		Name:              claims.Name,
-		PreferredUsername: claims.PreferredUsername,
-		Groups:            claims.Groups,
+		Sub:                 claims.Sub,
+		Email:               claims.Email,
+		Name:                claims.Name,
+		PreferredUsername:   claims.PreferredUsername,
+		AccountBindingID:    accountBindingID,
+		AccountBindingClaim: accountBindingClaim,
+		Groups:              claims.Groups,
 	}, nil
+}
+
+func claimString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func (o *oidcDelegatedAuthenticator) ensureProvider(ctx context.Context) error {

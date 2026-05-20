@@ -80,6 +80,7 @@ SELECT service_id,
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    identity_context,
     enabled,
     source,
     created_at,
@@ -107,6 +108,7 @@ type GetEnabledServiceCatalogEntryRow struct {
 	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	IdentityContext        string `db:"identity_context" json:"identity_context"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
 	Source                 string `db:"source" json:"source"`
 	CreatedAt              string `db:"created_at" json:"created_at"`
@@ -128,6 +130,7 @@ type GetEnabledServiceCatalogEntryRow struct {
 //	    persistence_policy,
 //	    adapter_requirement,
 //	    secret_contract,
+//	    identity_context,
 //	    enabled,
 //	    source,
 //	    created_at,
@@ -152,6 +155,7 @@ func (q *Queries) GetEnabledServiceCatalogEntry(ctx context.Context, arg GetEnab
 		&i.PersistencePolicy,
 		&i.AdapterRequirement,
 		&i.SecretContract,
+		&i.IdentityContext,
 		&i.Enabled,
 		&i.Source,
 		&i.CreatedAt,
@@ -174,6 +178,7 @@ SELECT service_id,
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    identity_context,
     enabled,
     source,
     created_at,
@@ -200,6 +205,7 @@ type GetServiceCatalogEntryRow struct {
 	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	IdentityContext        string `db:"identity_context" json:"identity_context"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
 	Source                 string `db:"source" json:"source"`
 	CreatedAt              string `db:"created_at" json:"created_at"`
@@ -221,6 +227,7 @@ type GetServiceCatalogEntryRow struct {
 //	    persistence_policy,
 //	    adapter_requirement,
 //	    secret_contract,
+//	    identity_context,
 //	    enabled,
 //	    source,
 //	    created_at,
@@ -244,6 +251,7 @@ func (q *Queries) GetServiceCatalogEntry(ctx context.Context, arg GetServiceCata
 		&i.PersistencePolicy,
 		&i.AdapterRequirement,
 		&i.SecretContract,
+		&i.IdentityContext,
 		&i.Enabled,
 		&i.Source,
 		&i.CreatedAt,
@@ -266,6 +274,7 @@ SELECT service_id,
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    identity_context,
     enabled,
     source,
     created_at,
@@ -289,6 +298,7 @@ type ListEnabledServiceCatalogRow struct {
 	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	IdentityContext        string `db:"identity_context" json:"identity_context"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
 	Source                 string `db:"source" json:"source"`
 	CreatedAt              string `db:"created_at" json:"created_at"`
@@ -310,6 +320,7 @@ type ListEnabledServiceCatalogRow struct {
 //	    persistence_policy,
 //	    adapter_requirement,
 //	    secret_contract,
+//	    identity_context,
 //	    enabled,
 //	    source,
 //	    created_at,
@@ -340,6 +351,7 @@ func (q *Queries) ListEnabledServiceCatalog(ctx context.Context) ([]ListEnabledS
 			&i.PersistencePolicy,
 			&i.AdapterRequirement,
 			&i.SecretContract,
+			&i.IdentityContext,
 			&i.Enabled,
 			&i.Source,
 			&i.CreatedAt,
@@ -408,6 +420,7 @@ SELECT service_id,
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    identity_context,
     enabled,
     source,
     created_at,
@@ -430,6 +443,7 @@ type ListServiceCatalogRow struct {
 	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	IdentityContext        string `db:"identity_context" json:"identity_context"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
 	Source                 string `db:"source" json:"source"`
 	CreatedAt              string `db:"created_at" json:"created_at"`
@@ -451,6 +465,7 @@ type ListServiceCatalogRow struct {
 //	    persistence_policy,
 //	    adapter_requirement,
 //	    secret_contract,
+//	    identity_context,
 //	    enabled,
 //	    source,
 //	    created_at,
@@ -480,6 +495,7 @@ func (q *Queries) ListServiceCatalog(ctx context.Context) ([]ListServiceCatalogR
 			&i.PersistencePolicy,
 			&i.AdapterRequirement,
 			&i.SecretContract,
+			&i.IdentityContext,
 			&i.Enabled,
 			&i.Source,
 			&i.CreatedAt,
@@ -513,6 +529,7 @@ INSERT INTO service_catalog (
     persistence_policy,
     adapter_requirement,
     secret_contract,
+    identity_context,
     enabled,
     source,
     updated_at
@@ -533,6 +550,7 @@ VALUES (
     ?13,
     ?14,
     ?15,
+    ?16,
     CURRENT_TIMESTAMP
 )
 ON CONFLICT(service_id) DO UPDATE SET
@@ -549,6 +567,7 @@ ON CONFLICT(service_id) DO UPDATE SET
     adapter_requirement = excluded.adapter_requirement,
     enabled = excluded.enabled,
     secret_contract = excluded.secret_contract,
+    identity_context = excluded.identity_context,
     source = excluded.source,
     updated_at = CURRENT_TIMESTAMP
 `
@@ -567,6 +586,7 @@ type UpsertServiceCatalogEntryParams struct {
 	PersistencePolicy      string `db:"persistence_policy" json:"persistence_policy"`
 	AdapterRequirement     string `db:"adapter_requirement" json:"adapter_requirement"`
 	SecretContract         string `db:"secret_contract" json:"secret_contract"`
+	IdentityContext        string `db:"identity_context" json:"identity_context"`
 	Enabled                int64  `db:"enabled" json:"enabled"`
 	Source                 string `db:"source" json:"source"`
 }
@@ -587,6 +607,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    persistence_policy,
 //	    adapter_requirement,
 //	    secret_contract,
+//	    identity_context,
 //	    enabled,
 //	    source,
 //	    updated_at
@@ -607,6 +628,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    ?13,
 //	    ?14,
 //	    ?15,
+//	    ?16,
 //	    CURRENT_TIMESTAMP
 //	)
 //	ON CONFLICT(service_id) DO UPDATE SET
@@ -623,6 +645,7 @@ type UpsertServiceCatalogEntryParams struct {
 //	    adapter_requirement = excluded.adapter_requirement,
 //	    enabled = excluded.enabled,
 //	    secret_contract = excluded.secret_contract,
+//	    identity_context = excluded.identity_context,
 //	    source = excluded.source,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServiceCatalogEntryParams) error {
@@ -640,6 +663,7 @@ func (q *Queries) UpsertServiceCatalogEntry(ctx context.Context, arg UpsertServi
 		arg.PersistencePolicy,
 		arg.AdapterRequirement,
 		arg.SecretContract,
+		arg.IdentityContext,
 		arg.Enabled,
 		arg.Source,
 	)

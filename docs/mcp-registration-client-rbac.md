@@ -43,7 +43,8 @@ curl -fsS http://mcp-control-plane:8081/v1/services/example \
     "resource_profile": "small",
     "persistence_policy": "stateless",
     "adapter_requirement": "none",
-    "secret_contract": [{"Key":"api-token","Required":true}]
+    "secret_contract": [{"Key":"api-token","Required":true}],
+    "identity_context": {"mode":"none"}
   }'
 ```
 
@@ -64,6 +65,31 @@ Static upstream binding is the supported path for self-hosted MCP services that 
 `upstream_url` identifies the upstream origin: scheme, host, and port. Catalog paths remain authoritative for routing: health checks use `health_path`, and proxied MCP traffic uses `internal_upstream_path`. Do not rely on a path in `upstream_url` to change where MCP requests are sent.
 
 The static upstream API is an admin-trusted egress capability. It is intended for operator-managed LAN, Docker-network, or otherwise trusted self-hosted MCP targets. Keep `mcp-control-plane` internal-only, protect the admin token, and do not delegate this API to untrusted users. Health checks do not follow redirects. The edge revalidates static upstream hostnames when resolving a tenant, but proxy dialing still performs its own DNS lookup; use literal IP upstream URLs when strict DNS-rebinding resistance is required.
+
+### App Account Binding
+
+Some MCP services need to operate as the app account that corresponds to the authenticated MCP subject, rather than as one static app token. For those services, set the catalog `identity_context` to `{"mode":"signed-headers"}`. Services that do not need app-account awareness should keep `{"mode":"none"}` or omit the field.
+
+When signed identity context is enabled, `mcp-edge` strips any inbound `X-MCP-Identity-*` and `X-MCP-Subject-*` headers, then injects trusted headers after OAuth token validation, service grant checks, resource binding checks, and tenant resolution. Configure `MCP_EDGE_IDENTITY_HEADER_SECRET_PATH` on `mcp-edge` with a shared HMAC secret and mount the same secret into app-account-aware MCP services. Configure `MCP_EDGE_ACCOUNT_BINDING_CLAIM` to the stable Authentik claim shared with downstream apps, for example `dragonserver_user_id` or `authentik_user_uuid`.
+
+Injected headers:
+
+| Header | Purpose |
+|---|---|
+| `X-MCP-Identity-Version` | Signature contract version, currently `v1`. |
+| `X-MCP-Identity-Service-ID` | Catalog service ID receiving the request. |
+| `X-MCP-Identity-Session-ID` | Edge OAuth session ID for audit correlation. |
+| `X-MCP-Identity-Issued-At` | Unix timestamp when the headers were produced. |
+| `X-MCP-Identity-Signature` | `v1=<base64url-hmac-sha256>` over the canonical header payload. |
+| `X-MCP-Subject-Sub` | MCP Edge/Auth subject `sub`. |
+| `X-MCP-Subject-Key` | Stable edge subject key used for tenant naming. |
+| `X-MCP-Subject-Email` | Email claim, for display or fallback only. |
+| `X-MCP-Subject-Preferred-Username` | Preferred username claim. |
+| `X-MCP-Subject-Display-Name` | Display name claim. |
+| `X-MCP-Subject-Account-Binding-ID` | Stable cross-app binding claim value, if present. |
+| `X-MCP-Subject-Account-Binding-Claim` | Claim name used for the binding ID. |
+
+The signature payload is the newline-joined sequence `version`, `service_id`, `session_id`, `issued_at`, `subject_sub`, `subject_key`, `email`, `preferred_username`, `display_name`, `account_binding_id`, and `account_binding_claim`. Account-aware MCP services must verify the signature, reject stale `issued_at` values, require the expected `service_id`, and bind to their app account using `X-MCP-Subject-Account-Binding-ID` instead of email whenever possible.
 
 Example static upstream binding request:
 
@@ -117,7 +143,7 @@ Client setup flow:
 3. Start authorization-code + PKCE (`S256`) against `/oauth/authorize`.
 4. Request exactly one service scope, such as `mcp:mealie`, and include the matching RFC 8707 `resource`, such as `https://<edge-domain>/mealie/mcp`.
 5. Exchange the authorization code at `/oauth/token` with the same `resource` value.
-6. Call the MCP service URL with `Authorization: Bearer <edge-issued-access-token>`.
+6. Let the client call the MCP service URL with the access token it manages internally.
 
 If `MCP_EDGE_CIMD_ENABLED=true`, the edge also accepts HTTPS Client ID Metadata Document URLs as `client_id` values and registers the public client metadata on first authorization.
 
@@ -157,21 +183,6 @@ scope=mcp:mealie
 resource=https://<edge-domain>/mealie/mcp
 code_challenge=<S256-challenge>
 code_challenge_method=S256
-```
-
-Example MCP client server entry after OAuth is complete:
-
-```json
-{
-  "mcpServers": {
-    "mealie": {
-      "url": "https://<edge-domain>/mealie/mcp",
-      "headers": {
-        "Authorization": "Bearer <edge-issued-access-token>"
-      }
-    }
-  }
-}
 ```
 
 Example device-only client registration request:
@@ -248,28 +259,11 @@ Revocation is scoped to sessions issued through `/oauth/operator-tokens`; it doe
 
 ### opencode Client Setup
 
-opencode supports remote MCP servers in `opencode.json` under the top-level `mcp` object. For OAuth-capable clients, prefer an OAuth configuration so opencode can discover Protected Resource Metadata, register or use a client, complete PKCE in the browser, and store tokens locally.
+opencode supports remote MCP servers in `opencode.json` under the top-level `mcp` object. Configure opencode with its first-class `oauth` block so opencode owns the OAuth flow and token storage. Do not configure edge access tokens in `headers`, environment variables, shell wrappers, or project files.
 
-Default production constraint: public dynamic client registration is disabled unless `MCP_EDGE_DCR_ENABLED=true`. A no-header OAuth client config works only when public DCR is intentionally enabled or when the client is already registered and the opencode version can use the pre-registered OAuth client metadata. Otherwise, use operator-token DCR outside the client first, then configure the client with its supported static OAuth fields, or use the static-token fallback for troubleshooting.
+Default production constraint: public dynamic client registration is disabled unless `MCP_EDGE_DCR_ENABLED=true`. For production, pre-register the opencode client with the edge operator token, then put only the returned `client_id` in opencode config. The operator token is used by the operator during registration only; it is not an opencode runtime credential.
 
-OAuth-first opencode example:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "mealie": {
-      "type": "remote",
-      "url": "https://<edge-domain>/mealie/mcp",
-      "enabled": true
-    }
-  }
-}
-```
-
-If automatic OAuth is not available in the installed opencode version, use an operator-issued OAuth token as a temporary static header. Keep this token out of source control and rotate it after testing.
-
-Static-token opencode fallback:
+Native OAuth opencode example with a pre-registered client:
 
 ```json
 {
@@ -279,10 +273,47 @@ Static-token opencode fallback:
       "type": "remote",
       "url": "https://<edge-domain>/mealie/mcp",
       "enabled": true,
-      "oauth": false,
-      "headers": {
-        "Authorization": "Bearer <edge-issued-access-token>"
+      "oauth": {
+        "clientId": "<pre-registered-client-id>",
+        "scope": "mcp:mealie"
       }
+    }
+  }
+}
+```
+
+Native OAuth opencode example with public DCR intentionally enabled:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mealie": {
+      "type": "remote",
+      "url": "https://<edge-domain>/mealie/mcp",
+      "enabled": true,
+      "oauth": {
+        "scope": "mcp:mealie"
+      }
+    }
+  }
+}
+```
+
+Device-flow behavior is client-owned. When opencode runs in a headless context and the edge authorization metadata advertises `urn:ietf:params:oauth:grant-type:device_code`, opencode should use device authorization, show the verification URL/user code, and store the issued tokens in its own credential store. The `opencode.json` shape stays the same; do not manually copy the returned device-flow access token into `headers`.
+
+Operator-issued tokens are not a direct `opencode.json` static-header configuration. They are for trusted automation clients that have a secure credential integration. If opencode needs this mode, use a credential-managed opencode plugin or local MCP bridge that mints/refreshes/revokes operator-issued scoped tokens outside project config and injects credentials at runtime without exposing them in config, logs, or environment. Do not use this mode as a bearer token pasted into `opencode.json`.
+
+Credential-managed bridge shape, if you provide one locally:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mealie": {
+      "type": "local",
+      "command": ["mcp-edge-credential-bridge", "--service", "mealie"],
+      "enabled": true
     }
   }
 }
@@ -293,7 +324,7 @@ opencode validation checklist:
 1. Confirm `GET https://<edge-domain>/mealie/mcp` without a token returns `401` and a `WWW-Authenticate` header with `resource_metadata="https://<edge-domain>/.well-known/oauth-protected-resource/mealie"`.
 2. Add the remote server URL to `opencode.json`.
 3. Run opencode's MCP auth/connect flow for the server.
-4. Confirm the browser login uses Authentik and requests exactly the service scope, for example `mcp:mealie`.
+4. Confirm opencode uses either loopback PKCE or device authorization from the edge OAuth metadata, not a static bearer header.
 5. Confirm opencode can list tools after the edge token is issued.
 
 ### Cursor Client Setup
@@ -309,23 +340,6 @@ OAuth-first Cursor example:
   "mcpServers": {
     "mealie": {
       "url": "https://<edge-domain>/mealie/mcp"
-    }
-  }
-}
-```
-
-If OAuth is not available or needs to be isolated during troubleshooting, use a static bearer token header. Prefer environment interpolation where your Cursor version supports it; otherwise paste only a short-lived test token and rotate it immediately afterward.
-
-Static-token Cursor fallback:
-
-```json
-{
-  "mcpServers": {
-    "mealie": {
-      "url": "https://<edge-domain>/mealie/mcp",
-      "headers": {
-        "Authorization": "Bearer ${env:MCP_EDGE_MEALIE_TOKEN}"
-      }
     }
   }
 }

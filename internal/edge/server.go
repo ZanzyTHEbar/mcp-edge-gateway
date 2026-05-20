@@ -34,6 +34,7 @@ type Server struct {
 	stateStore                edgeStateStore
 	oauth                     *OAuthService
 	auth                      *AuthRuntime
+	identityHeaderSigner      *identityHeaderSigner
 	bridgeMu                  sync.Mutex
 	sseBridges                map[string]http.Handler
 }
@@ -104,6 +105,7 @@ func NewServerWithStateStore(ctx context.Context, cfg Config, logger zerolog.Log
 		stateStore:                stateStore,
 		auth:                      authRuntime,
 		oauth:                     oauthService,
+		identityHeaderSigner:      newIdentityHeaderSigner(cfg.IdentityHeaderSecretPath),
 		sseBridges:                make(map[string]http.Handler),
 	}, nil
 }
@@ -369,6 +371,24 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 			return
 		}
 
+		identityRequest, err := s.withUpstreamIdentityContext(r, service, tokenInfo.GetUserID(), tokenInfoSessionID(tokenInfo))
+		if err != nil {
+			s.logger.Error().
+				Err(err).
+				Str("service_id", service.ServiceID).
+				Str("subject_sub", tokenInfo.GetUserID()).
+				Msg("identity context unavailable")
+			s.recordAuditEvent(r.Context(), edgeAuditEvent{
+				ActorSubjectSub: tokenInfo.GetUserID(),
+				ServiceID:       service.ServiceID,
+				EventType:       "mcp.service.access.denied",
+				EventStatus:     "identity_context_unavailable",
+			})
+			writeJSONError(w, http.StatusServiceUnavailable, "identity_context_unavailable", "unable to prepare trusted identity context for this MCP service")
+			return
+		}
+		r = identityRequest
+
 		s.recordAuditEvent(r.Context(), edgeAuditEvent{
 			ActorSubjectSub: tokenInfo.GetUserID(),
 			ServiceID:       service.ServiceID,
@@ -398,6 +418,24 @@ func (s *Server) handleServiceRoute(service catalog.ServiceCatalogEntry) http.Ha
 		)
 		proxy.ServeHTTP(w, r)
 	}
+}
+
+func (s *Server) withUpstreamIdentityContext(r *http.Request, service catalog.ServiceCatalogEntry, subjectSub string, sessionID string) (*http.Request, error) {
+	if !service.IdentityContext.Enabled() {
+		return r, nil
+	}
+	claims, ok, err := s.stateStore.GetSubjectIdentity(r.Context(), subjectSub)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		claims = IdentityClaims{Sub: subjectSub}
+	}
+	headers, err := s.identityHeaderSigner.Headers(service, claims, sessionID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return r.WithContext(withUpstreamIdentityHeaders(r.Context(), headers)), nil
 }
 
 func (s *Server) sseBridge(target *url.URL, publicPath string, upstreamPath string) http.Handler {

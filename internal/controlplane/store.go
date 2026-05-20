@@ -156,6 +156,10 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("marshal secret contract for %s: %w", entry.ServiceID, err)
 		}
+		identityContext, err := json.Marshal(entry.IdentityContext.Normalized())
+		if err != nil {
+			return fmt.Errorf("marshal identity context for %s: %w", entry.ServiceID, err)
+		}
 		if err := s.queries.UpsertServiceCatalogEntry(ctx, platformdb.UpsertServiceCatalogEntryParams{
 			ServiceID:              entry.ServiceID,
 			DisplayName:            entry.DisplayName,
@@ -170,6 +174,7 @@ func (s *Store) SeedServiceCatalog(ctx context.Context) error {
 			PersistencePolicy:      entry.PersistencePolicy,
 			AdapterRequirement:     string(entry.AdapterRequirement),
 			SecretContract:         string(secretContract),
+			IdentityContext:        string(identityContext),
 			Enabled:                1,
 			Source:                 "builtin",
 		}); err != nil {
@@ -221,6 +226,10 @@ func (s *Store) UpsertAdminServiceCatalogEntry(ctx context.Context, entry catalo
 	if err != nil {
 		return fmt.Errorf("marshal secret contract for %s: %w", entry.ServiceID, err)
 	}
+	identityContext, err := json.Marshal(entry.IdentityContext.Normalized())
+	if err != nil {
+		return fmt.Errorf("marshal identity context for %s: %w", entry.ServiceID, err)
+	}
 	return s.withTx(ctx, func(q *platformdb.Queries) error {
 		if existing, err := q.GetServiceCatalogEntry(ctx, platformdb.GetServiceCatalogEntryParams{ServiceID: entry.ServiceID}); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("load existing service catalog entry %s: %w", entry.ServiceID, err)
@@ -244,6 +253,7 @@ func (s *Store) UpsertAdminServiceCatalogEntry(ctx context.Context, entry catalo
 			PersistencePolicy:      entry.PersistencePolicy,
 			AdapterRequirement:     string(entry.AdapterRequirement),
 			SecretContract:         string(secretContract),
+			IdentityContext:        string(identityContext),
 			Enabled:                1,
 			Source:                 "admin_api",
 		}); err != nil {
@@ -272,11 +282,13 @@ func (s *Store) DisableServiceCatalogEntry(ctx context.Context, serviceID string
 
 func (s *Store) UpsertSubject(ctx context.Context, subject domain.Subject) error {
 	if err := s.queries.UpsertSubject(ctx, platformdb.UpsertSubjectParams{
-		SubjectSub:        subject.Sub,
-		SubjectKey:        subject.SubjectKey,
-		PreferredUsername: sqlNullString(subject.PreferredUsername),
-		Email:             sqlNullString(subject.Email),
-		DisplayName:       sqlNullString(subject.DisplayName),
+		SubjectSub:          subject.Sub,
+		SubjectKey:          subject.SubjectKey,
+		PreferredUsername:   sqlNullString(subject.PreferredUsername),
+		Email:               sqlNullString(subject.Email),
+		DisplayName:         sqlNullString(subject.DisplayName),
+		AccountBindingID:    sqlNullString(subject.AccountBindingID),
+		AccountBindingClaim: sqlNullString(subject.AccountBindingClaim),
 	}); err != nil {
 		return fmt.Errorf("upsert subject %s: %w", subject.Sub, err)
 	}
@@ -334,11 +346,13 @@ func (s *Store) UpsertManualServiceGrant(ctx context.Context, subject domain.Sub
 			subject.SubjectKey = domain.DeriveSubjectKey(subject.Sub)
 		}
 		if err := q.UpsertSubjectPreservingMetadata(ctx, platformdb.UpsertSubjectPreservingMetadataParams{
-			SubjectSub:        subject.Sub,
-			SubjectKey:        subject.SubjectKey,
-			PreferredUsername: sqlNullString(subject.PreferredUsername),
-			Email:             sqlNullString(subject.Email),
-			DisplayName:       sqlNullString(subject.DisplayName),
+			SubjectSub:          subject.Sub,
+			SubjectKey:          subject.SubjectKey,
+			PreferredUsername:   sqlNullString(subject.PreferredUsername),
+			Email:               sqlNullString(subject.Email),
+			DisplayName:         sqlNullString(subject.DisplayName),
+			AccountBindingID:    sqlNullString(subject.AccountBindingID),
+			AccountBindingClaim: sqlNullString(subject.AccountBindingClaim),
 		}); err != nil {
 			return fmt.Errorf("upsert subject %s for manual grant: %w", subject.Sub, err)
 		}
@@ -375,11 +389,13 @@ func (s *Store) UpsertStaticTenantUpstream(ctx context.Context, subject domain.S
 			subject.SubjectKey = domain.DeriveSubjectKey(subject.Sub)
 		}
 		if err := q.UpsertSubjectPreservingMetadata(ctx, platformdb.UpsertSubjectPreservingMetadataParams{
-			SubjectSub:        subject.Sub,
-			SubjectKey:        subject.SubjectKey,
-			PreferredUsername: sqlNullString(subject.PreferredUsername),
-			Email:             sqlNullString(subject.Email),
-			DisplayName:       sqlNullString(subject.DisplayName),
+			SubjectSub:          subject.Sub,
+			SubjectKey:          subject.SubjectKey,
+			PreferredUsername:   sqlNullString(subject.PreferredUsername),
+			Email:               sqlNullString(subject.Email),
+			DisplayName:         sqlNullString(subject.DisplayName),
+			AccountBindingID:    sqlNullString(subject.AccountBindingID),
+			AccountBindingClaim: sqlNullString(subject.AccountBindingClaim),
 		}); err != nil {
 			return fmt.Errorf("upsert subject %s for static upstream: %w", subject.Sub, err)
 		}
@@ -422,11 +438,13 @@ func (s *Store) SyncSubjectGrantSnapshot(ctx context.Context, subjects []domain.
 		for _, subjectSub := range subjectSubs {
 			subject := subjectsBySub[subjectSub]
 			if err := q.UpsertSubject(ctx, platformdb.UpsertSubjectParams{
-				SubjectSub:        subject.Sub,
-				SubjectKey:        subject.SubjectKey,
-				PreferredUsername: sqlNullString(subject.PreferredUsername),
-				Email:             sqlNullString(subject.Email),
-				DisplayName:       sqlNullString(subject.DisplayName),
+				SubjectSub:          subject.Sub,
+				SubjectKey:          subject.SubjectKey,
+				PreferredUsername:   sqlNullString(subject.PreferredUsername),
+				Email:               sqlNullString(subject.Email),
+				DisplayName:         sqlNullString(subject.DisplayName),
+				AccountBindingID:    sqlNullString(subject.AccountBindingID),
+				AccountBindingClaim: sqlNullString(subject.AccountBindingClaim),
 			}); err != nil {
 				return fmt.Errorf("upsert subject %s during snapshot sync: %w", subject.Sub, err)
 			}
@@ -599,7 +617,7 @@ func loadDesiredTenantSpecs(ctx context.Context, q *platformdb.Queries) (map[str
 	}
 	desiredSpecs := make(map[string]desiredTenantSpec, len(rows))
 	for _, row := range rows {
-		spec := desiredTenantSpec{subject: domain.Subject{Sub: row.SubjectSub, SubjectKey: row.SubjectKey, PreferredUsername: row.PreferredUsername, Email: row.Email, DisplayName: row.DisplayName}, serviceID: row.ServiceID}
+		spec := desiredTenantSpec{subject: domain.Subject{Sub: row.SubjectSub, SubjectKey: row.SubjectKey, PreferredUsername: row.PreferredUsername, Email: row.Email, DisplayName: row.DisplayName, AccountBindingID: row.AccountBindingID, AccountBindingClaim: row.AccountBindingClaim}, serviceID: row.ServiceID}
 		desiredSpecs[tenantMapKey(row.SubjectSub, row.ServiceID)] = spec
 	}
 	return desiredSpecs, nil
@@ -694,12 +712,17 @@ func convertServiceCatalogAdminEntries(records []platformdb.ListServiceCatalogRo
 			ResourceProfile:        record.ResourceProfile,
 			PersistencePolicy:      record.PersistencePolicy,
 			AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+			IdentityContext:        catalog.IdentityContextConfig{},
 			Enabled:                record.Enabled != 0,
 			Source:                 record.Source,
 		}
 		if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
 			return nil, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
 		}
+		if err := json.Unmarshal([]byte(record.IdentityContext), &entry.IdentityContext); err != nil {
+			return nil, fmt.Errorf("decode identity context for %s: %w", entry.ServiceID, err)
+		}
+		entry.IdentityContext = entry.IdentityContext.Normalized()
 		entries = append(entries, entry)
 	}
 	return entries, nil
@@ -719,12 +742,17 @@ func convertServiceCatalogAdminEntry(record platformdb.GetServiceCatalogEntryRow
 		ResourceProfile:        record.ResourceProfile,
 		PersistencePolicy:      record.PersistencePolicy,
 		AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+		IdentityContext:        catalog.IdentityContextConfig{},
 		Enabled:                record.Enabled != 0,
 		Source:                 record.Source,
 	}
 	if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
 		return ServiceCatalogAdminEntry{}, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
 	}
+	if err := json.Unmarshal([]byte(record.IdentityContext), &entry.IdentityContext); err != nil {
+		return ServiceCatalogAdminEntry{}, fmt.Errorf("decode identity context for %s: %w", entry.ServiceID, err)
+	}
+	entry.IdentityContext = entry.IdentityContext.Normalized()
 	return entry, nil
 }
 
@@ -742,10 +770,15 @@ func convertEnabledServiceCatalogRecord(record platformdb.GetEnabledServiceCatal
 		ResourceProfile:        record.ResourceProfile,
 		PersistencePolicy:      record.PersistencePolicy,
 		AdapterRequirement:     catalog.AdapterRequirement(record.AdapterRequirement),
+		IdentityContext:        catalog.IdentityContextConfig{},
 	}
 	if err := json.Unmarshal([]byte(record.SecretContract), &entry.SecretContract); err != nil {
 		return catalog.ServiceCatalogEntry{}, fmt.Errorf("decode secret contract for %s: %w", entry.ServiceID, err)
 	}
+	if err := json.Unmarshal([]byte(record.IdentityContext), &entry.IdentityContext); err != nil {
+		return catalog.ServiceCatalogEntry{}, fmt.Errorf("decode identity context for %s: %w", entry.ServiceID, err)
+	}
+	entry.IdentityContext = entry.IdentityContext.Normalized()
 	return entry, nil
 }
 

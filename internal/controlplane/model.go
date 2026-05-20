@@ -10,21 +10,22 @@ import (
 )
 
 type ServiceCatalogAdminEntry struct {
-	ServiceID              string                     `json:"service_id"`
-	DisplayName            string                     `json:"display_name"`
-	UpstreamServiceName    string                     `json:"upstream_service_name"`
-	TransportType          catalog.TransportType      `json:"transport_type"`
-	InternalPort           int                        `json:"internal_port"`
-	PublicPath             string                     `json:"public_path"`
-	InternalUpstreamPath   string                     `json:"internal_upstream_path"`
-	HealthPath             string                     `json:"health_path"`
-	HealthProbeExpectation string                     `json:"health_probe_expectation"`
-	ResourceProfile        string                     `json:"resource_profile"`
-	PersistencePolicy      string                     `json:"persistence_policy"`
-	AdapterRequirement     catalog.AdapterRequirement `json:"adapter_requirement"`
-	SecretContract         []catalog.SecretDefinition `json:"secret_contract"`
-	Enabled                bool                       `json:"enabled"`
-	Source                 string                     `json:"source"`
+	ServiceID              string                        `json:"service_id"`
+	DisplayName            string                        `json:"display_name"`
+	UpstreamServiceName    string                        `json:"upstream_service_name"`
+	TransportType          catalog.TransportType         `json:"transport_type"`
+	InternalPort           int                           `json:"internal_port"`
+	PublicPath             string                        `json:"public_path"`
+	InternalUpstreamPath   string                        `json:"internal_upstream_path"`
+	HealthPath             string                        `json:"health_path"`
+	HealthProbeExpectation string                        `json:"health_probe_expectation"`
+	ResourceProfile        string                        `json:"resource_profile"`
+	PersistencePolicy      string                        `json:"persistence_policy"`
+	AdapterRequirement     catalog.AdapterRequirement    `json:"adapter_requirement"`
+	SecretContract         []catalog.SecretDefinition    `json:"secret_contract"`
+	IdentityContext        catalog.IdentityContextConfig `json:"identity_context"`
+	Enabled                bool                          `json:"enabled"`
+	Source                 string                        `json:"source"`
 }
 
 type ServiceGrant struct {

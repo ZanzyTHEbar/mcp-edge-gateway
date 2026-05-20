@@ -6,11 +6,13 @@ import (
 )
 
 type Subject struct {
-	Sub               string
-	SubjectKey        string
-	PreferredUsername string
-	Email             string
-	DisplayName       string
+	Sub                 string
+	SubjectKey          string
+	PreferredUsername   string
+	Email               string
+	DisplayName         string
+	AccountBindingID    string
+	AccountBindingClaim string
 }
 
 func DeriveSubjectKey(sub string) string {

@@ -3,11 +3,14 @@ package edge
 import "context"
 
 type AuthenticatedSubject struct {
-	Sub               string
-	Email             string
-	DisplayName       string
-	PreferredUsername string
-	Groups            []string
+	Sub                 string
+	SubjectKey          string
+	Email               string
+	DisplayName         string
+	PreferredUsername   string
+	AccountBindingID    string
+	AccountBindingClaim string
+	Groups              []string
 }
 
 type subjectContextKey struct{}

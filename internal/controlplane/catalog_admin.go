@@ -16,18 +16,19 @@ import (
 var controlPlaneServiceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 type serviceCatalogRequest struct {
-	DisplayName            string                     `json:"display_name"`
-	UpstreamServiceName    string                     `json:"upstream_service_name"`
-	TransportType          catalog.TransportType      `json:"transport_type"`
-	InternalPort           int                        `json:"internal_port"`
-	PublicPath             string                     `json:"public_path"`
-	InternalUpstreamPath   string                     `json:"internal_upstream_path"`
-	HealthPath             string                     `json:"health_path"`
-	HealthProbeExpectation string                     `json:"health_probe_expectation"`
-	ResourceProfile        string                     `json:"resource_profile"`
-	PersistencePolicy      string                     `json:"persistence_policy"`
-	AdapterRequirement     catalog.AdapterRequirement `json:"adapter_requirement"`
-	SecretContract         []catalog.SecretDefinition `json:"secret_contract"`
+	DisplayName            string                        `json:"display_name"`
+	UpstreamServiceName    string                        `json:"upstream_service_name"`
+	TransportType          catalog.TransportType         `json:"transport_type"`
+	InternalPort           int                           `json:"internal_port"`
+	PublicPath             string                        `json:"public_path"`
+	InternalUpstreamPath   string                        `json:"internal_upstream_path"`
+	HealthPath             string                        `json:"health_path"`
+	HealthProbeExpectation string                        `json:"health_probe_expectation"`
+	ResourceProfile        string                        `json:"resource_profile"`
+	PersistencePolicy      string                        `json:"persistence_policy"`
+	AdapterRequirement     catalog.AdapterRequirement    `json:"adapter_requirement"`
+	SecretContract         []catalog.SecretDefinition    `json:"secret_contract"`
+	IdentityContext        catalog.IdentityContextConfig `json:"identity_context"`
 }
 
 func (a *App) handleServices(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +112,7 @@ func (a *App) handleServicePut(w http.ResponseWriter, r *http.Request, serviceID
 		PersistencePolicy:      strings.TrimSpace(request.PersistencePolicy),
 		AdapterRequirement:     request.AdapterRequirement,
 		SecretContract:         request.SecretContract,
+		IdentityContext:        request.IdentityContext.Normalized(),
 	}
 	if err := validateServiceCatalogEntry(entry); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -195,6 +197,10 @@ func validateServiceCatalogEntry(entry catalog.ServiceCatalogEntry) error {
 	}
 	if entry.AdapterRequirement != catalog.AdapterRequirementNone && entry.AdapterRequirement != catalog.AdapterRequirementPathTranslation && entry.AdapterRequirement != catalog.AdapterRequirementSSEToStreamableHTTP {
 		return fmt.Errorf("adapter_requirement must be one of: none, path-translation, sse-to-streamable-http")
+	}
+	identityContext := entry.IdentityContext.Normalized()
+	if identityContext.Mode != catalog.IdentityContextModeNone && identityContext.Mode != catalog.IdentityContextModeSignedHeaders {
+		return fmt.Errorf("identity_context.mode must be one of: none, signed-headers")
 	}
 	if entry.InternalPort < 1 || entry.InternalPort > 65535 {
 		return fmt.Errorf("internal_port must be between 1 and 65535")

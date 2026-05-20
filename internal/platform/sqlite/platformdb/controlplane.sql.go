@@ -224,7 +224,9 @@ SELECT subject_sub,
        subject_key,
        preferred_username,
        email,
-       display_name
+       display_name,
+       account_binding_id,
+       account_binding_claim
 FROM subjects
 WHERE subject_sub = ?1
 `
@@ -234,11 +236,13 @@ type GetSubjectParams struct {
 }
 
 type GetSubjectRow struct {
-	SubjectSub        string         `db:"subject_sub" json:"subject_sub"`
-	SubjectKey        string         `db:"subject_key" json:"subject_key"`
-	PreferredUsername sql.NullString `db:"preferred_username" json:"preferred_username"`
-	Email             sql.NullString `db:"email" json:"email"`
-	DisplayName       sql.NullString `db:"display_name" json:"display_name"`
+	SubjectSub          string         `db:"subject_sub" json:"subject_sub"`
+	SubjectKey          string         `db:"subject_key" json:"subject_key"`
+	PreferredUsername   sql.NullString `db:"preferred_username" json:"preferred_username"`
+	Email               sql.NullString `db:"email" json:"email"`
+	DisplayName         sql.NullString `db:"display_name" json:"display_name"`
+	AccountBindingID    sql.NullString `db:"account_binding_id" json:"account_binding_id"`
+	AccountBindingClaim sql.NullString `db:"account_binding_claim" json:"account_binding_claim"`
 }
 
 // GetSubject
@@ -247,7 +251,9 @@ type GetSubjectRow struct {
 //	       subject_key,
 //	       preferred_username,
 //	       email,
-//	       display_name
+//	       display_name,
+//	       account_binding_id,
+//	       account_binding_claim
 //	FROM subjects
 //	WHERE subject_sub = ?1
 func (q *Queries) GetSubject(ctx context.Context, arg GetSubjectParams) (GetSubjectRow, error) {
@@ -259,6 +265,8 @@ func (q *Queries) GetSubject(ctx context.Context, arg GetSubjectParams) (GetSubj
 		&i.PreferredUsername,
 		&i.Email,
 		&i.DisplayName,
+		&i.AccountBindingID,
+		&i.AccountBindingClaim,
 	)
 	return i, err
 }
@@ -399,6 +407,8 @@ SELECT subjects.subject_sub,
        COALESCE(subjects.preferred_username, '') AS preferred_username,
        COALESCE(subjects.email, '') AS email,
        COALESCE(subjects.display_name, '') AS display_name,
+       COALESCE(subjects.account_binding_id, '') AS account_binding_id,
+       COALESCE(subjects.account_binding_claim, '') AS account_binding_claim,
        service_grants.service_id
 FROM service_grants
 JOIN subjects ON subjects.subject_sub = service_grants.subject_sub
@@ -408,12 +418,14 @@ ORDER BY service_grants.service_id, subjects.subject_sub
 `
 
 type ListDesiredTenantSpecsRow struct {
-	SubjectSub        string `db:"subject_sub" json:"subject_sub"`
-	SubjectKey        string `db:"subject_key" json:"subject_key"`
-	PreferredUsername string `db:"preferred_username" json:"preferred_username"`
-	Email             string `db:"email" json:"email"`
-	DisplayName       string `db:"display_name" json:"display_name"`
-	ServiceID         string `db:"service_id" json:"service_id"`
+	SubjectSub          string `db:"subject_sub" json:"subject_sub"`
+	SubjectKey          string `db:"subject_key" json:"subject_key"`
+	PreferredUsername   string `db:"preferred_username" json:"preferred_username"`
+	Email               string `db:"email" json:"email"`
+	DisplayName         string `db:"display_name" json:"display_name"`
+	AccountBindingID    string `db:"account_binding_id" json:"account_binding_id"`
+	AccountBindingClaim string `db:"account_binding_claim" json:"account_binding_claim"`
+	ServiceID           string `db:"service_id" json:"service_id"`
 }
 
 // ListDesiredTenantSpecs
@@ -423,6 +435,8 @@ type ListDesiredTenantSpecsRow struct {
 //	       COALESCE(subjects.preferred_username, '') AS preferred_username,
 //	       COALESCE(subjects.email, '') AS email,
 //	       COALESCE(subjects.display_name, '') AS display_name,
+//	       COALESCE(subjects.account_binding_id, '') AS account_binding_id,
+//	       COALESCE(subjects.account_binding_claim, '') AS account_binding_claim,
 //	       service_grants.service_id
 //	FROM service_grants
 //	JOIN subjects ON subjects.subject_sub = service_grants.subject_sub
@@ -444,6 +458,8 @@ func (q *Queries) ListDesiredTenantSpecs(ctx context.Context) ([]ListDesiredTena
 			&i.PreferredUsername,
 			&i.Email,
 			&i.DisplayName,
+			&i.AccountBindingID,
+			&i.AccountBindingClaim,
 			&i.ServiceID,
 		); err != nil {
 			return nil, err
@@ -859,34 +875,40 @@ func (q *Queries) UpsertStaticTenantUpstream(ctx context.Context, arg UpsertStat
 }
 
 const UpsertSubject = `-- name: UpsertSubject :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = excluded.subject_key,
     preferred_username = excluded.preferred_username,
     email = excluded.email,
     display_name = excluded.display_name,
+	account_binding_id = excluded.account_binding_id,
+	account_binding_claim = excluded.account_binding_claim,
     last_synced_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 `
 
 type UpsertSubjectParams struct {
-	SubjectSub        string         `db:"subject_sub" json:"subject_sub"`
-	SubjectKey        string         `db:"subject_key" json:"subject_key"`
-	PreferredUsername sql.NullString `db:"preferred_username" json:"preferred_username"`
-	Email             sql.NullString `db:"email" json:"email"`
-	DisplayName       sql.NullString `db:"display_name" json:"display_name"`
+	SubjectSub          string         `db:"subject_sub" json:"subject_sub"`
+	SubjectKey          string         `db:"subject_key" json:"subject_key"`
+	PreferredUsername   sql.NullString `db:"preferred_username" json:"preferred_username"`
+	Email               sql.NullString `db:"email" json:"email"`
+	DisplayName         sql.NullString `db:"display_name" json:"display_name"`
+	AccountBindingID    sql.NullString `db:"account_binding_id" json:"account_binding_id"`
+	AccountBindingClaim sql.NullString `db:"account_binding_claim" json:"account_binding_claim"`
 }
 
 // UpsertSubject
 //
-//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-//	VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+//	VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 //	ON CONFLICT(subject_sub) DO UPDATE SET
 //	    subject_key = excluded.subject_key,
 //	    preferred_username = excluded.preferred_username,
 //	    email = excluded.email,
 //	    display_name = excluded.display_name,
+//		account_binding_id = excluded.account_binding_id,
+//		account_binding_claim = excluded.account_binding_claim,
 //	    last_synced_at = CURRENT_TIMESTAMP,
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertSubject(ctx context.Context, arg UpsertSubjectParams) error {
@@ -896,38 +918,46 @@ func (q *Queries) UpsertSubject(ctx context.Context, arg UpsertSubjectParams) er
 		arg.PreferredUsername,
 		arg.Email,
 		arg.DisplayName,
+		arg.AccountBindingID,
+		arg.AccountBindingClaim,
 	)
 	return err
 }
 
 const UpsertSubjectPreservingMetadata = `-- name: UpsertSubjectPreservingMetadata :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = subjects.subject_key,
     preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
     email = COALESCE(excluded.email, subjects.email),
     display_name = COALESCE(excluded.display_name, subjects.display_name),
+	account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+	account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
     updated_at = CURRENT_TIMESTAMP
 `
 
 type UpsertSubjectPreservingMetadataParams struct {
-	SubjectSub        string         `db:"subject_sub" json:"subject_sub"`
-	SubjectKey        string         `db:"subject_key" json:"subject_key"`
-	PreferredUsername sql.NullString `db:"preferred_username" json:"preferred_username"`
-	Email             sql.NullString `db:"email" json:"email"`
-	DisplayName       sql.NullString `db:"display_name" json:"display_name"`
+	SubjectSub          string         `db:"subject_sub" json:"subject_sub"`
+	SubjectKey          string         `db:"subject_key" json:"subject_key"`
+	PreferredUsername   sql.NullString `db:"preferred_username" json:"preferred_username"`
+	Email               sql.NullString `db:"email" json:"email"`
+	DisplayName         sql.NullString `db:"display_name" json:"display_name"`
+	AccountBindingID    sql.NullString `db:"account_binding_id" json:"account_binding_id"`
+	AccountBindingClaim sql.NullString `db:"account_binding_claim" json:"account_binding_claim"`
 }
 
 // UpsertSubjectPreservingMetadata
 //
-//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-//	VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+//	INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+//	VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 //	ON CONFLICT(subject_sub) DO UPDATE SET
 //	    subject_key = subjects.subject_key,
 //	    preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
 //	    email = COALESCE(excluded.email, subjects.email),
 //	    display_name = COALESCE(excluded.display_name, subjects.display_name),
+//		account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+//		account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
 //	    updated_at = CURRENT_TIMESTAMP
 func (q *Queries) UpsertSubjectPreservingMetadata(ctx context.Context, arg UpsertSubjectPreservingMetadataParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertSubjectPreservingMetadata,
@@ -936,6 +966,8 @@ func (q *Queries) UpsertSubjectPreservingMetadata(ctx context.Context, arg Upser
 		arg.PreferredUsername,
 		arg.Email,
 		arg.DisplayName,
+		arg.AccountBindingID,
+		arg.AccountBindingClaim,
 	)
 	return err
 }

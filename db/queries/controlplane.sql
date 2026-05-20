@@ -1,22 +1,26 @@
 -- name: UpsertSubject :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), sqlc.arg(preferred_username), sqlc.arg(email), sqlc.arg(display_name), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), sqlc.arg(preferred_username), sqlc.arg(email), sqlc.arg(display_name), sqlc.arg(account_binding_id), sqlc.arg(account_binding_claim), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = excluded.subject_key,
     preferred_username = excluded.preferred_username,
     email = excluded.email,
     display_name = excluded.display_name,
+	account_binding_id = excluded.account_binding_id,
+	account_binding_claim = excluded.account_binding_claim,
     last_synced_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP;
 
 -- name: UpsertSubjectPreservingMetadata :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, updated_at)
-VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), sqlc.arg(preferred_username), sqlc.arg(email), sqlc.arg(display_name), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, updated_at)
+VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), sqlc.arg(preferred_username), sqlc.arg(email), sqlc.arg(display_name), sqlc.arg(account_binding_id), sqlc.arg(account_binding_claim), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = subjects.subject_key,
     preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
     email = COALESCE(excluded.email, subjects.email),
     display_name = COALESCE(excluded.display_name, subjects.display_name),
+	account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+	account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
     updated_at = CURRENT_TIMESTAMP;
 
 -- name: GetSubject :one
@@ -24,7 +28,9 @@ SELECT subject_sub,
        subject_key,
        preferred_username,
        email,
-       display_name
+       display_name,
+       account_binding_id,
+       account_binding_claim
 FROM subjects
 WHERE subject_sub = sqlc.arg(subject_sub);
 
@@ -106,6 +112,8 @@ SELECT subjects.subject_sub,
        COALESCE(subjects.preferred_username, '') AS preferred_username,
        COALESCE(subjects.email, '') AS email,
        COALESCE(subjects.display_name, '') AS display_name,
+       COALESCE(subjects.account_binding_id, '') AS account_binding_id,
+       COALESCE(subjects.account_binding_claim, '') AS account_binding_claim,
        service_grants.service_id
 FROM service_grants
 JOIN subjects ON subjects.subject_sub = service_grants.subject_sub

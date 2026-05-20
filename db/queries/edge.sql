@@ -267,13 +267,15 @@ FROM audit_events
 WHERE event_type = sqlc.arg(event_type);
 
 -- name: EdgeUpsertSubject :exec
-INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, last_synced_at, created_at, updated_at)
-VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), NULLIF(sqlc.arg(preferred_username), ''), NULLIF(sqlc.arg(email), ''), NULLIF(sqlc.arg(display_name), ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+INSERT INTO subjects (subject_sub, subject_key, preferred_username, email, display_name, account_binding_id, account_binding_claim, last_synced_at, created_at, updated_at)
+VALUES (sqlc.arg(subject_sub), sqlc.arg(subject_key), NULLIF(sqlc.arg(preferred_username), ''), NULLIF(sqlc.arg(email), ''), NULLIF(sqlc.arg(display_name), ''), NULLIF(sqlc.arg(account_binding_id), ''), NULLIF(sqlc.arg(account_binding_claim), ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(subject_sub) DO UPDATE SET
     subject_key = excluded.subject_key,
     preferred_username = COALESCE(excluded.preferred_username, subjects.preferred_username),
     email = COALESCE(excluded.email, subjects.email),
     display_name = COALESCE(excluded.display_name, subjects.display_name),
+    account_binding_id = COALESCE(excluded.account_binding_id, subjects.account_binding_id),
+    account_binding_claim = COALESCE(excluded.account_binding_claim, subjects.account_binding_claim),
     last_synced_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP;
 
