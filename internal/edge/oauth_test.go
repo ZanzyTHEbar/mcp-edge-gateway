@@ -109,8 +109,128 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
 	require.Equal(t, "https://mcp.example.com/mealie/mcp", payload["resource"])
 	require.Equal(t, "Mealie", payload["resource_name"])
+	require.Contains(t, payload["authorization_servers"], "https://mcp.example.com/mealie")
 	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
 	require.NotContains(t, payload["scopes_supported"], "mcp:actualbudget")
+
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mealie", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com/mealie", payload["issuer"])
+	require.Equal(t, "https://mcp.example.com/oauth/register/mealie", payload["registration_endpoint"])
+	require.Equal(t, "https://mcp.example.com/oauth/authorize/mealie", payload["authorization_endpoint"])
+	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
+	require.NotContains(t, payload["scopes_supported"], "mcp:actualbudget")
+}
+
+func TestOAuthServiceScopedDCRAndAuthorizeNarrowBroadScope(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/mcp", r.URL.Path)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	server := newTestEdgeServer(t, urlResolver{targets: map[string]string{"mealie": upstream.URL}})
+	handler := server.Handler()
+	redirectURI := "https://client.example.com/oauth/callback"
+	broadScope := strings.Join(server.catalogCache.Scopes(), " ")
+
+	registrationBody := `{
+		"client_name":"service-scoped-client",
+		"redirect_uris":["` + redirectURI + `"],
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"token_endpoint_auth_method":"none",
+		"scope":"` + broadScope + `"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register/mealie", strings.NewReader(registrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+	require.Equal(t, "mcp:mealie", registration.Scope)
+
+	authorizeRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize/mealie?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
+			"&redirect_uri="+url.QueryEscape(redirectURI)+
+			"&scope="+url.QueryEscape(broadScope)+
+			"&state="+url.QueryEscape("service-scoped-state")+
+			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
+			"&code_challenge_method=S256",
+		nil,
+	)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, authorizeRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+
+	loginRedirect, err := url.Parse(res.Header().Get("Location"))
+	require.NoError(t, err)
+	callbackRequest := httptest.NewRequest(http.MethodGet, loginRedirect.String(), nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, callbackRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+	require.NotEmpty(t, res.Result().Cookies())
+
+	callbackRequest = httptest.NewRequest(http.MethodGet, res.Header().Get("Location"), nil)
+	callbackRequest.AddCookie(res.Result().Cookies()[0])
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, callbackRequest)
+	require.Equal(t, http.StatusFound, res.Code)
+
+	redirectLocation, err := url.Parse(res.Header().Get("Location"))
+	require.NoError(t, err)
+	require.Equal(t, redirectURI, redirectLocation.Scheme+"://"+redirectLocation.Host+redirectLocation.Path)
+	require.Equal(t, "service-scoped-state", redirectLocation.Query().Get("state"))
+	authCode := redirectLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+
+	tokenForm := url.Values{}
+	tokenForm.Set("grant_type", "authorization_code")
+	tokenForm.Set("code", authCode)
+	tokenForm.Set("redirect_uri", redirectURI)
+	tokenForm.Set("client_id", registration.ClientID)
+	tokenForm.Set("code_verifier", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+
+	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var tokenPayload map[string]any
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &tokenPayload))
+	accessToken, ok := tokenPayload["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+
+	introspectionForm := url.Values{"token": {accessToken}}
+	req = httptest.NewRequest(http.MethodPost, "/oauth/introspect", strings.NewReader(introspectionForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var introspection tokenIntrospectionResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &introspection))
+	require.True(t, introspection.Active)
+	require.Equal(t, "mcp:mealie", introspection.Scope)
+	require.Equal(t, "https://mcp.example.com/mealie/mcp", introspection.Resource)
+
+	serviceRequest := httptest.NewRequest(http.MethodGet, "/mealie/mcp", nil)
+	serviceRequest.Header.Set("Authorization", "Bearer "+accessToken)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, serviceRequest)
+	require.Equal(t, http.StatusOK, res.Code)
+	require.JSONEq(t, `{"ok":true}`, res.Body.String())
 }
 
 func TestDesktopClientOAuthSmokeUsesDiscoveryResourceAndLoopbackRedirect(t *testing.T) {
@@ -363,6 +483,51 @@ func TestOAuthAuthorizeAndTokenDeriveMissingResourceFromSingleScope(t *testing.T
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
 }
 
+func TestOAuthGlobalMultiScopeAuthorizeWithoutResourceFails(t *testing.T) {
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+	redirectURI := "https://client.example.com/oauth/callback"
+	broadScope := "mcp:mealie mcp:actualbudget"
+
+	registrationBody := `{
+		"client_name":"global-multiscope-client",
+		"redirect_uris":["` + redirectURI + `"],
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"token_endpoint_auth_method":"none",
+		"scope":"` + broadScope + `"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(registrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+
+	subject := AuthenticatedSubject{Sub: "fixture-user", Groups: []string{"mcp-users", "mcp-service-mealie", "mcp-service-actualbudget"}}
+	require.NoError(t, server.stateStore.UpsertSubject(context.Background(), IdentityClaims{Sub: subject.Sub, Groups: subject.Groups}))
+	authorizeRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/oauth/authorize?response_type=code&client_id="+url.QueryEscape(registration.ClientID)+
+			"&redirect_uri="+url.QueryEscape(redirectURI)+
+			"&scope="+url.QueryEscape(broadScope)+
+			"&state="+url.QueryEscape("global-state")+
+			"&code_challenge="+url.QueryEscape("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")+
+			"&code_challenge_method=S256",
+		nil,
+	)
+	authorizeRequest = authorizeRequest.WithContext(WithAuthenticatedSubject(authorizeRequest.Context(), subject))
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, authorizeRequest)
+
+	require.Equal(t, http.StatusBadRequest, res.Code)
+	require.Contains(t, res.Body.String(), "invalid_resource")
+	require.Contains(t, res.Body.String(), "exactly one mcp")
+}
+
 func TestOAuthRegistrationAllowsDeviceOnlyClientWithoutRedirectURI(t *testing.T) {
 	server := newTestEdgeServer(t, nil)
 	handler := server.Handler()
@@ -595,6 +760,67 @@ func TestOAuthDeviceAuthorizationIssuesTokenAfterApproval(t *testing.T) {
 	handler.ServeHTTP(res, serviceRequest)
 	require.Equal(t, http.StatusOK, res.Code)
 	require.JSONEq(t, `{"ok":true}`, res.Body.String())
+}
+
+func TestOAuthServiceScopedDeviceAuthorizationNarrowsBroadScope(t *testing.T) {
+	server := newTestEdgeServer(t, nil)
+	handler := server.Handler()
+	broadScope := strings.Join(server.catalogCache.Scopes(), " ")
+
+	registrationBody := `{
+    "client_name":"service-scoped-headless-cli",
+    "grant_types":["` + oauthGrantDeviceCode + `","refresh_token"],
+    "response_types":[],
+    "token_endpoint_auth_method":"none",
+    "scope":"` + broadScope + `"
+  }`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register/mealie", strings.NewReader(registrationBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusCreated, res.Code)
+
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+	require.Equal(t, "mcp:mealie", registration.Scope)
+
+	deviceForm := url.Values{}
+	deviceForm.Set("client_id", registration.ClientID)
+	deviceForm.Set("scope", broadScope)
+	req = httptest.NewRequest(http.MethodPost, "/oauth/device_authorization/mealie", strings.NewReader(deviceForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+
+	var deviceResponse deviceAuthorizationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &deviceResponse))
+	require.NotEmpty(t, deviceResponse.DeviceCode)
+
+	deviceRecord, ok, err := server.stateStore.GetDeviceAuthorizationByDeviceCode(context.Background(), deviceResponse.DeviceCode)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "mcp:mealie", deviceRecord.Scope)
+	require.Equal(t, "mealie", deviceRecord.ServiceID)
+	require.Equal(t, "https://mcp.example.com/mealie/mcp", deviceRecord.Resource)
+
+	wrongResourceForm := url.Values{}
+	wrongResourceForm.Set("client_id", registration.ClientID)
+	wrongResourceForm.Set("scope", broadScope)
+	wrongResourceForm.Set("resource", "https://mcp.example.com/actualbudget/mcp")
+	req = httptest.NewRequest(http.MethodPost, "/oauth/device_authorization/mealie", strings.NewReader(wrongResourceForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusBadRequest, res.Code)
+	require.Contains(t, res.Body.String(), "invalid_resource")
+
+	req = httptest.NewRequest(http.MethodPost, "/oauth/device_authorization/not-a-service", strings.NewReader(deviceForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusNotFound, res.Code)
 }
 
 func TestOAuthDeviceAuthorizationDenyRequiresCSRFAndRejectsPolling(t *testing.T) {

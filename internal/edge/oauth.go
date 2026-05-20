@@ -214,12 +214,16 @@ func NewOAuthService(cfg Config, logger zerolog.Logger, catalogCache *CatalogCac
 
 func (o *OAuthService) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-authorization-server", o.handleAuthorizationServerMetadata)
+	mux.HandleFunc("/.well-known/oauth-authorization-server/", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/openid-configuration", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource/", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/oauth/register", o.handleClientRegistration)
+	mux.HandleFunc("/oauth/register/", o.handleClientRegistration)
 	mux.HandleFunc("/oauth/authorize", o.handleAuthorize)
+	mux.HandleFunc("/oauth/authorize/", o.handleAuthorize)
 	mux.HandleFunc("/oauth/device_authorization", o.handleDeviceAuthorization)
+	mux.HandleFunc("/oauth/device_authorization/", o.handleDeviceAuthorization)
 	mux.HandleFunc("/oauth/device", o.handleDeviceVerification)
 	mux.HandleFunc("/oauth/token", o.handleToken)
 	mux.HandleFunc("/oauth/introspect", o.handleIntrospect)
@@ -237,23 +241,98 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "metadata requires GET")
 		return
 	}
+	serviceID, serviceScoped, err := o.serviceIDFromWellKnownPath(r.URL.Path)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
+
+	issuer := o.publicBaseURL
+	authorizationEndpoint := o.publicBaseURL + "/oauth/authorize"
+	deviceAuthorizationEndpoint := o.publicBaseURL + "/oauth/device_authorization"
+	registrationEndpoint := o.publicBaseURL + "/oauth/register"
+	scopes := o.catalog.Scopes()
+	if serviceScoped {
+		issuer = o.serviceIssuer(serviceID)
+		authorizationEndpoint = o.publicBaseURL + "/oauth/authorize/" + serviceID
+		deviceAuthorizationEndpoint = o.publicBaseURL + "/oauth/device_authorization/" + serviceID
+		registrationEndpoint = o.publicBaseURL + "/oauth/register/" + serviceID
+		scopes = []string{"mcp:" + serviceID}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                o.publicBaseURL,
-		"authorization_endpoint":                o.publicBaseURL + "/oauth/authorize",
-		"device_authorization_endpoint":         o.publicBaseURL + "/oauth/device_authorization",
+		"issuer":                                issuer,
+		"authorization_endpoint":                authorizationEndpoint,
+		"device_authorization_endpoint":         deviceAuthorizationEndpoint,
 		"token_endpoint":                        o.publicBaseURL + "/oauth/token",
-		"registration_endpoint":                 o.publicBaseURL + "/oauth/register",
+		"registration_endpoint":                 registrationEndpoint,
 		"introspection_endpoint":                o.publicBaseURL + "/oauth/introspect",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{oauthGrantAuthorizationCode, oauthGrantRefreshToken, oauthGrantDeviceCode},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{tokenEndpointAuthMethodNone, tokenEndpointAuthMethodClientPost, tokenEndpointAuthMethodClientBasic},
-		"scopes_supported":                      o.catalog.Scopes(),
+		"scopes_supported":                      scopes,
 		"resource_indicators_supported":         true,
 		"client_id_metadata_document_supported": true,
 		"dynamic_client_registration_supported": o.dcrEnabled,
 	})
+}
+
+func (o *OAuthService) serviceIDFromWellKnownPath(path string) (string, bool, error) {
+	if path == "/.well-known/openid-configuration" {
+		return "", false, nil
+	}
+	return o.serviceIDFromPath(path, "/.well-known/oauth-authorization-server")
+}
+
+func (o *OAuthService) serviceIDFromPath(path string, prefix string) (string, bool, error) {
+	if path == prefix {
+		return "", false, nil
+	}
+	if !strings.HasPrefix(path, prefix+"/") {
+		return "", false, fmt.Errorf("unsupported service-scoped path")
+	}
+	serviceID := strings.TrimPrefix(path, prefix+"/")
+	if serviceID == "" || strings.Contains(serviceID, "/") {
+		return "", true, fmt.Errorf("requested service is not registered")
+	}
+	if _, ok := o.catalog.ServiceByID(serviceID); !ok {
+		return "", true, fmt.Errorf("requested service is not registered")
+	}
+	return serviceID, true, nil
+}
+
+func (o *OAuthService) serviceIssuer(serviceID string) string {
+	return o.publicBaseURL + "/" + strings.Trim(strings.TrimSpace(serviceID), "/")
+}
+
+func (o *OAuthService) narrowRequestScopeToService(r *http.Request, serviceID string) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("unable to parse request parameters")
+	}
+	scope, err := o.scopeForServiceContext(r.Form.Get("scope"), serviceID)
+	if err != nil {
+		return err
+	}
+	setRequestFormValue(r, "scope", scope)
+	return nil
+}
+
+func (o *OAuthService) scopeForServiceContext(scope string, serviceID string) (string, error) {
+	serviceScope := "mcp:" + serviceID
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return serviceScope, nil
+	}
+	if !scopeStringAllowed(scope, o.catalog.Scopes()) {
+		return "", fmt.Errorf("requested scopes are not supported")
+	}
+	if !scopeIncludesService(scope, serviceID) {
+		return "", fmt.Errorf("requested scope must include the service scope")
+	}
+	// Service-scoped endpoints intentionally collapse broad catalog scope sets to
+	// the one service scope for this issuer/resource, preserving one-resource tokens.
+	return serviceScope, nil
 }
 
 func (o *OAuthService) handleDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +344,17 @@ func (o *OAuthService) handleDeviceAuthorization(w http.ResponseWriter, r *http.
 	if err := r.ParseForm(); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "unable to parse request parameters")
 		return
+	}
+	serviceID, serviceScoped, err := o.serviceIDFromPath(r.URL.Path, "/oauth/device_authorization")
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
+	if serviceScoped {
+		if err := o.narrowRequestScopeToService(r, serviceID); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+			return
+		}
 	}
 	clientID, clientSecret, err := resolveClientCredentials(r)
 	if err != nil {
@@ -293,7 +383,7 @@ func (o *OAuthService) handleDeviceAuthorization(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "requested scope is not supported")
 		return
 	}
-	serviceID, err := singleServiceFromScope(scope)
+	serviceID, err = singleServiceFromScope(scope)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
@@ -360,17 +450,17 @@ func (o *OAuthService) handleProtectedResourceMetadata(w http.ResponseWriter, r 
 			writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
 			return
 		}
-		o.writeProtectedResourceMetadata(w, o.publicBaseURL+service.PublicPath, []string{"mcp:" + service.ServiceID}, service.DisplayName)
+		o.writeProtectedResourceMetadata(w, o.publicBaseURL+service.PublicPath, []string{"mcp:" + service.ServiceID}, service.DisplayName, []string{o.serviceIssuer(service.ServiceID)})
 		return
 	}
 
-	o.writeProtectedResourceMetadata(w, o.publicBaseURL, o.catalog.Scopes(), "mcp-edge")
+	o.writeProtectedResourceMetadata(w, o.publicBaseURL, o.catalog.Scopes(), "mcp-edge", []string{o.publicBaseURL})
 }
 
-func (o *OAuthService) writeProtectedResourceMetadata(w http.ResponseWriter, resource string, scopes []string, resourceName string) {
+func (o *OAuthService) writeProtectedResourceMetadata(w http.ResponseWriter, resource string, scopes []string, resourceName string, authorizationServers []string) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource":                              resource,
-		"authorization_servers":                 []string{o.publicBaseURL},
+		"authorization_servers":                 authorizationServers,
 		"scopes_supported":                      scopes,
 		"bearer_methods_supported":              []string{"header"},
 		"resource_documentation":                o.publicBaseURL + "/health",
@@ -385,6 +475,11 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "client registration requires POST")
 		return
 	}
+	serviceID, serviceScoped, err := o.serviceIDFromPath(r.URL.Path, "/oauth/register")
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
 	if !o.dcrEnabled && !o.requireOperatorToken(w, r) {
 		return
 	}
@@ -395,8 +490,18 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return
 	}
+	allowedScopes := o.catalog.Scopes()
+	if serviceScoped {
+		scope, err := o.scopeForServiceContext(req.Scope, serviceID)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+			return
+		}
+		req.Scope = scope
+		allowedScopes = []string{scope}
+	}
 
-	record, err := normalizeClientRegistration(req, o.catalog.Scopes())
+	record, err := normalizeClientRegistration(req, allowedScopes)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
@@ -455,6 +560,17 @@ func (o *OAuthService) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, POST")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "authorize supports GET and POST")
 		return
+	}
+	serviceID, serviceScoped, err := o.serviceIDFromPath(r.URL.Path, "/oauth/authorize")
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
+	if serviceScoped {
+		if err := o.narrowRequestScopeToService(r, serviceID); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+			return
+		}
 	}
 
 	subject, ok := SubjectFromContext(r.Context())
@@ -1298,11 +1414,20 @@ func setRequestResourceIndicator(r *http.Request, resource string) {
 	if resource == "" {
 		return
 	}
+	setRequestFormValue(r, "resource", resource)
+}
+
+func setRequestFormValue(r *http.Request, key string, value string) {
 	if r.Form != nil {
-		r.Form.Set("resource", resource)
+		r.Form.Set(key, value)
 	}
 	if r.PostForm != nil {
-		r.PostForm.Set("resource", resource)
+		r.PostForm.Set(key, value)
+	}
+	if r.Method == http.MethodGet && r.URL != nil {
+		query := r.URL.Query()
+		query.Set(key, value)
+		r.URL.RawQuery = query.Encode()
 	}
 }
 
