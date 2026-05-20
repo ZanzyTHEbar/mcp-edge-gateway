@@ -252,12 +252,14 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 	deviceAuthorizationEndpoint := o.publicBaseURL + "/oauth/device_authorization"
 	registrationEndpoint := o.publicBaseURL + "/oauth/register"
 	scopes := o.catalog.Scopes()
+	dcrSupported := false
 	if serviceScoped {
 		issuer = o.serviceIssuer(serviceID)
 		authorizationEndpoint = o.publicBaseURL + "/oauth/authorize/" + serviceID
 		deviceAuthorizationEndpoint = o.publicBaseURL + "/oauth/device_authorization/" + serviceID
 		registrationEndpoint = o.publicBaseURL + "/oauth/register/" + serviceID
 		scopes = []string{"mcp:" + serviceID}
+		dcrSupported = o.dcrEnabled
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -274,7 +276,7 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 		"scopes_supported":                      scopes,
 		"resource_indicators_supported":         true,
 		"client_id_metadata_document_supported": true,
-		"dynamic_client_registration_supported": o.dcrEnabled,
+		"dynamic_client_registration_supported": dcrSupported,
 	})
 }
 
@@ -480,7 +482,7 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
 		return
 	}
-	if !o.dcrEnabled && !o.requireOperatorToken(w, r) {
+	if (!serviceScoped || !o.dcrEnabled) && !o.requireOperatorToken(w, r) {
 		return
 	}
 

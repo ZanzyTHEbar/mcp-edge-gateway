@@ -1453,9 +1453,20 @@ func TestOAuthRegistrationRequiresOperatorBearerToken(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, res.Code)
 	require.Contains(t, res.Body.String(), "operator bearer token is required")
+
+	req = httptest.NewRequest(http.MethodPost, "/oauth/register/mealie", strings.NewReader(`{
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback"]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusUnauthorized, res.Code)
+	require.Contains(t, res.Body.String(), "operator bearer token is required")
 }
 
-func TestOAuthRegistrationAllowsPublicDCRWhenEnabled(t *testing.T) {
+func TestOAuthGlobalRegistrationRequiresOperatorWhenPublicDCRIsEnabled(t *testing.T) {
 	cfg := testEdgeConfig()
 	cfg.DCREnabled = true
 	server, err := NewServer(cfg, zerolog.New(httptest.NewRecorder()), staticResolver{})
@@ -1463,8 +1474,59 @@ func TestOAuthRegistrationAllowsPublicDCRWhenEnabled(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{
 		"client_name":"example-client",
-		"redirect_uris":["https://client.example.com/oauth/callback","https://client.example.com/alternate"],
 		"scope":"mcp:mealie"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusUnauthorized, res.Code)
+	require.Contains(t, res.Body.String(), "operator bearer token is required")
+
+	req = httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{
+		"client_name":"operator-client",
+		"redirect_uris":["https://client.example.com/oauth/callback"],
+		"scope":"mcp:mealie"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer fixture-operator-token")
+	res = httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusCreated, res.Code)
+	var registration clientRegistrationResponse
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+	require.Equal(t, "mcp:mealie", registration.Scope)
+}
+
+func TestOAuthRegistrationAllowsPublicServiceScopedDCRWhenEnabled(t *testing.T) {
+	cfg := testEdgeConfig()
+	cfg.DCREnabled = true
+	server, err := NewServer(cfg, zerolog.New(httptest.NewRecorder()), staticResolver{})
+	require.NoError(t, err)
+
+	metadataReq := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	metadataRes := httptest.NewRecorder()
+	server.Handler().ServeHTTP(metadataRes, metadataReq)
+	require.Equal(t, http.StatusOK, metadataRes.Code)
+
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(metadataRes.Body.Bytes(), &metadata))
+	require.Equal(t, false, metadata["dynamic_client_registration_supported"])
+	require.Equal(t, "https://mcp.example.com/oauth/register", metadata["registration_endpoint"])
+
+	metadataReq = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mealie", nil)
+	metadataRes = httptest.NewRecorder()
+	server.Handler().ServeHTTP(metadataRes, metadataReq)
+	require.Equal(t, http.StatusOK, metadataRes.Code)
+	require.NoError(t, json.Unmarshal(metadataRes.Body.Bytes(), &metadata))
+	require.Equal(t, true, metadata["dynamic_client_registration_supported"])
+	require.Equal(t, "https://mcp.example.com/oauth/register/mealie", metadata["registration_endpoint"])
+
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register/mealie", strings.NewReader(`{
+		"client_name":"example-client",
+		"redirect_uris":["https://client.example.com/oauth/callback","https://client.example.com/alternate"],
+		"scope":"mcp:mealie mcp:actualbudget"
 	}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
@@ -1474,6 +1536,7 @@ func TestOAuthRegistrationAllowsPublicDCRWhenEnabled(t *testing.T) {
 	var registration clientRegistrationResponse
 	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
 	require.Len(t, registration.RedirectURIs, 2)
+	require.Equal(t, "mcp:mealie", registration.Scope)
 	require.Equal(t, "none", registration.TokenEndpointAuthMethod)
 }
 
