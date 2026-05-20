@@ -216,6 +216,7 @@ func (o *OAuthService) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-authorization-server", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-authorization-server/", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/openid-configuration", o.handleAuthorizationServerMetadata)
+	mux.HandleFunc("/.well-known/openid-configuration/", o.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource/", o.handleProtectedResourceMetadata)
 	mux.HandleFunc("/oauth/register", o.handleClientRegistration)
@@ -281,10 +282,35 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 }
 
 func (o *OAuthService) serviceIDFromWellKnownPath(path string) (string, bool, error) {
-	if path == "/.well-known/openid-configuration" {
+	for _, prefix := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
+		serviceID, serviceScoped, err := o.serviceIDFromWellKnownMetadataPath(path, prefix)
+		if err == nil {
+			return serviceID, serviceScoped, nil
+		}
+	}
+	return "", false, fmt.Errorf("unsupported service-scoped path")
+}
+
+func (o *OAuthService) serviceIDFromWellKnownMetadataPath(path string, prefix string) (string, bool, error) {
+	if path == prefix {
 		return "", false, nil
 	}
-	return o.serviceIDFromPath(path, "/.well-known/oauth-authorization-server")
+	if !strings.HasPrefix(path, prefix+"/") {
+		return "", false, fmt.Errorf("unsupported service-scoped path")
+	}
+	serviceRef := strings.Trim(strings.TrimPrefix(path, prefix+"/"), "/")
+	if serviceRef == "" {
+		return "", true, fmt.Errorf("requested service is not registered")
+	}
+	if !strings.Contains(serviceRef, "/") {
+		if _, ok := o.catalog.ServiceByID(serviceRef); ok {
+			return serviceRef, true, nil
+		}
+	}
+	if service, ok := o.catalog.MatchPublicPath("/" + serviceRef); ok {
+		return service.ServiceID, true, nil
+	}
+	return "", true, fmt.Errorf("requested service is not registered")
 }
 
 func (o *OAuthService) serviceIDFromPath(path string, prefix string) (string, bool, error) {
@@ -444,9 +470,12 @@ func (o *OAuthService) handleProtectedResourceMetadata(w http.ResponseWriter, r 
 		return
 	}
 
-	serviceID := strings.TrimPrefix(r.URL.Path, "/.well-known/oauth-protected-resource/")
-	if serviceID != r.URL.Path {
-		serviceID = strings.Trim(serviceID, "/")
+	serviceID, serviceScoped, err := o.serviceIDFromWellKnownMetadataPath(r.URL.Path, "/.well-known/oauth-protected-resource")
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")
+		return
+	}
+	if serviceScoped {
 		service, ok := o.catalog.ServiceByID(serviceID)
 		if !ok {
 			writeJSONError(w, http.StatusNotFound, "service_not_found", "requested service is not registered on this edge")

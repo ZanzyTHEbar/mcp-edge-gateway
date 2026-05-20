@@ -113,6 +113,16 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
 	require.NotContains(t, payload["scopes_supported"], "mcp:actualbudget")
 
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mealie/mcp", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com/mealie/mcp", payload["resource"])
+	require.Contains(t, payload["authorization_servers"], "https://mcp.example.com/mealie")
+	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
+
 	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mealie", nil)
 	res = httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
@@ -124,6 +134,26 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.Equal(t, "https://mcp.example.com/oauth/authorize/mealie", payload["authorization_endpoint"])
 	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
 	require.NotContains(t, payload["scopes_supported"], "mcp:actualbudget")
+
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mealie/mcp", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com/mealie", payload["issuer"])
+	require.Equal(t, "https://mcp.example.com/oauth/register/mealie", payload["registration_endpoint"])
+	require.Equal(t, "https://mcp.example.com/oauth/authorize/mealie", payload["authorization_endpoint"])
+	require.Contains(t, payload["scopes_supported"], "mcp:mealie")
+
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration/mealie/mcp", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
+	require.Equal(t, "https://mcp.example.com/mealie", payload["issuer"])
+	require.Equal(t, "https://mcp.example.com/oauth/register/mealie", payload["registration_endpoint"])
 }
 
 func TestOAuthServiceScopedDCRAndAuthorizeNarrowBroadScope(t *testing.T) {
