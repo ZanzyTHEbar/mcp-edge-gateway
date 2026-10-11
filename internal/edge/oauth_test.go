@@ -83,6 +83,13 @@ func TestOAuthMetadataEndpoints(t *testing.T) {
 	require.Contains(t, payload["scopes_supported"], "mcp:example-a")
 	require.Contains(t, payload["code_challenge_methods_supported"], "S256")
 	require.Equal(t, true, payload["resource_indicators_supported"])
+	require.Equal(t, false, payload["client_id_metadata_document_supported"])
+
+	server.oauth.cimdEnabled = true
+	req = httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &payload))
 	require.Equal(t, true, payload["client_id_metadata_document_supported"])
 
 	req = httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)

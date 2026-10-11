@@ -296,7 +296,7 @@ func (o *OAuthService) handleAuthorizationServerMetadata(w http.ResponseWriter, 
 		"token_endpoint_auth_methods_supported": []string{tokenEndpointAuthMethodNone, tokenEndpointAuthMethodClientPost, tokenEndpointAuthMethodClientBasic},
 		"scopes_supported":                      scopes,
 		"resource_indicators_supported":         true,
-		"client_id_metadata_document_supported": true,
+		"client_id_metadata_document_supported": o.cimdEnabled,
 		"dynamic_client_registration_supported": dcrSupported,
 	})
 }
