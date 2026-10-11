@@ -115,6 +115,88 @@ func TestAuthentikClientBuildGrantSnapshot(t *testing.T) {
 	require.Equal(t, 1, tokenCalls)
 }
 
+func TestAuthentikClientBuildGrantSnapshotFollowsNestedPagination(t *testing.T) {
+	t.Parallel()
+
+	var server *httptest.Server
+	userPages := make([]string, 0, 2)
+	groupPages := make([]string, 0, 2)
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]any{
+				"issuer":                 server.URL,
+				"authorization_endpoint": server.URL + "/authorize",
+				"token_endpoint":         server.URL + "/token",
+				"jwks_uri":               server.URL + "/keys",
+			})
+		case "/token":
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, authentikAPIScope, r.Form.Get("scope"))
+			writeTestJSON(t, w, map[string]any{
+				"access_token": "authentik-token",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		case "/api/v3/core/users/":
+			userPages = append(userPages, r.URL.Query().Get("page"))
+			if r.URL.Query().Get("page") == "2" {
+				writeTestJSON(t, w, map[string]any{
+					"pagination": map[string]any{"count": 2, "next": 0, "previous": 1},
+					"results": []map[string]any{{
+						"pk": 8, "uid": "subject-uid-8", "username": "bob", "name": "Bob",
+						"email": "bob@example.com", "is_active": true, "attributes": map[string]any{},
+					}},
+				})
+				return
+			}
+			writeTestJSON(t, w, map[string]any{
+				"pagination": map[string]any{"count": 2, "next": 2, "previous": nil},
+				"results": []map[string]any{{
+					"pk": 5, "uid": "subject-uid-5", "username": "alice", "name": "Alice",
+					"email": "alice@example.com", "is_active": true,
+					"attributes": map[string]any{"sub": "subject-sub-5"},
+				}},
+			})
+		case "/api/v3/core/groups/":
+			groupPages = append(groupPages, r.URL.Query().Get("page"))
+			if r.URL.Query().Get("page") == "2" {
+				writeTestJSON(t, w, map[string]any{
+					"pagination": map[string]any{"count": 2, "next": 0, "previous": 1},
+					"results":    []map[string]any{{"pk": 22, "name": "mcp-service-example-b", "users": []any{8}}},
+				})
+				return
+			}
+			writeTestJSON(t, w, map[string]any{
+				"pagination": map[string]any{"count": 2, "next": 2, "previous": nil},
+				"results":    []map[string]any{{"pk": 11, "name": "mcp-service-example-a", "users": []any{5}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewAuthentikClient(server.URL, "client-id", "client-secret", zerolog.Nop())
+	require.NoError(t, err)
+
+	subjects, grants, err := client.buildGrantSnapshot(context.Background(), testSupportedServiceIDs())
+	require.NoError(t, err)
+	require.Len(t, subjects, 2)
+	require.Len(t, grants, 2)
+	require.Equal(t, []string{"", "2"}, userPages)
+	require.Equal(t, []string{"", "2"}, groupPages)
+
+	grantSet := make(map[string]string)
+	for _, grant := range grants {
+		grantSet[grant.SubjectSub+"::"+grant.ServiceID] = grant.SourceGroup
+	}
+	require.Equal(t, map[string]string{
+		"subject-sub-5::example-a": "mcp-service-example-a",
+		"subject-uid-8::example-b": "mcp-service-example-b",
+	}, grantSet)
+}
+
 func TestSubjectSubFromAuthentikUserUsesOIDCSubjectPreference(t *testing.T) {
 	t.Parallel()
 

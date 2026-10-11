@@ -51,8 +51,12 @@ type AuthentikGroup struct {
 }
 
 type authentikListResponse struct {
-	Next    string            `json:"next"`
-	Results []json.RawMessage `json:"results"`
+	Pagination authentikPagination `json:"pagination"`
+	Results    []json.RawMessage   `json:"results"`
+}
+
+type authentikPagination struct {
+	Next int `json:"next"`
 }
 
 type authentikUserResponse struct {
@@ -137,7 +141,7 @@ func (c *AuthentikClient) ListUsers(ctx context.Context) ([]AuthentikUser, error
 			}
 			users = append(users, user)
 		}
-		requestURL, err = absolutizeURL(c.apiBaseURL, page.Next)
+		requestURL, err = nextAuthentikPageURL(c.apiBaseURL, requestURL, page.Pagination.Next)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +178,7 @@ func (c *AuthentikClient) ListGroups(ctx context.Context) ([]AuthentikGroup, err
 			}
 			groups = append(groups, group)
 		}
-		requestURL, err = absolutizeURL(c.apiBaseURL, page.Next)
+		requestURL, err = nextAuthentikPageURL(c.apiBaseURL, requestURL, page.Pagination.Next)
 		if err != nil {
 			return nil, err
 		}
@@ -441,6 +445,22 @@ func rawSliceToStrings(rawValues []json.RawMessage) ([]string, int) {
 		values = append(values, value)
 	}
 	return values, skipped
+}
+
+func nextAuthentikPageURL(apiBaseURL string, currentURL string, nextPage int) (string, error) {
+	if nextPage <= 0 {
+		return "", nil
+	}
+
+	parsedCurrent, err := url.Parse(currentURL)
+	if err != nil {
+		return "", fmt.Errorf("parse authentik pagination request url: %w", err)
+	}
+	query := parsedCurrent.Query()
+	query.Set("page", strconv.Itoa(nextPage))
+	parsedCurrent.RawQuery = query.Encode()
+
+	return absolutizeURL(apiBaseURL, parsedCurrent.String())
 }
 
 func decodeAuthentikUser(raw json.RawMessage) (AuthentikUser, error) {
