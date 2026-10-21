@@ -265,8 +265,10 @@ func (r *relay) sse(reader io.Reader, responseID string) (string, bool, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			if len(data) != 0 {
-				message, err := r.write([]byte(strings.Join(data, "\n")))
+			// MCP SSE streams may prime an event ID with empty data before a
+			// response. Keep its cursor, but it is not a JSON-RPC message.
+			if payload := strings.Join(data, "\n"); payload != "" {
+				message, err := r.write([]byte(payload))
 				if err != nil {
 					return lastID, delivered, err
 				}

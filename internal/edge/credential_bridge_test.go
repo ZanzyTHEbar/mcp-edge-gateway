@@ -74,6 +74,7 @@ func TestCredentialBridgeDeviceLoginAndStdio(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "id: priming-cursor\ndata:\n\n")
 		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"through authenticated edge\"}]}}\n\n", message.ID)
 	}))
 	defer upstream.Close()
