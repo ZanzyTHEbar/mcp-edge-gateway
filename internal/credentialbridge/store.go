@@ -31,6 +31,8 @@ type credential struct {
 
 const keystoreService = "mcp-edge-credential-bridge"
 
+var errCredentialAccess = errors.New("MCP credential unavailable")
+
 type credentialStore struct {
 	path, key            string
 	secretTool, dbusTool string
@@ -264,7 +266,7 @@ func (t *authorizedTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	token, err := t.client.token(req.Context(), "")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errCredentialAccess, err)
 	}
 	send := func(token *oauth2.Token, retry bool) (*http.Response, error) {
 		clone := req.Clone(req.Context())
@@ -285,7 +287,7 @@ func (t *authorizedTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	res.Body.Close()
 	fresh, err := t.client.token(req.Context(), token.AccessToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errCredentialAccess, err)
 	}
 	return send(fresh, true)
 }

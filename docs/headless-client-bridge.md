@@ -173,9 +173,14 @@ fields, and IDs. It handles JSON and SSE POST responses, MCP session/version
 headers, and the optional legacy server-initiated GET SSE stream. It forwards
 notifications and server requests without replacing them with a fixed tool list.
 It closes the remote session on exit. Requests are bounded to 32 in flight and
-16 MiB per message. A failed HTTP request is not blindly replayed: only a `401`
-can trigger one credential refresh and replay. Reconnect the MCP client if a
-session expires or a stream repeatedly disconnects.
+16 MiB per message. A failed MCP POST is not blindly replayed: only a `401`
+can trigger one credential refresh and replay. The notification-only GET stream
+reconnects after idle proxy timeouts, clean closures, transient network failures,
+and HTTP 429/500/502/503/504 responses. It retains the MCP session ID and last event
+cursor, with retry backoff capped at 30 seconds. A quiet stream need not produce
+JSON-RPC messages to keep the bridge alive. Invalid non-empty JSON-RPC,
+authentication/keystore errors, and expired server sessions still surface as
+failures; reconnect the MCP client after resolving those conditions.
 
 Deploy the Edge compatibility fixes before relying on standard device polling:
 empty registration arrays must encode as `[]`, and device token errors must

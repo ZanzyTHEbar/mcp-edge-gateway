@@ -34,6 +34,7 @@ func TestCredentialBridgeDeviceLoginAndStdio(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	notificationSent := make(chan struct{})
+	var streamConnections atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusNoContent)
@@ -45,6 +46,29 @@ func TestCredentialBridgeDeviceLoginAndStdio(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
+			connectionNumber := streamConnections.Add(1)
+			if connectionNumber == 1 {
+				// A quiet stream is primed, then its HTTP connection is cut like
+				// an idle proxy timeout. The bridge must retain the session/cursor.
+				fmt.Fprint(w, "id: idle-cursor\ndata:\n\n")
+				w.(http.Flusher).Flush()
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("cut idle stream: %v", err)
+					return
+				}
+				connection.Close()
+				return
+			}
+			if connectionNumber == 2 {
+				// Some gateways report an idle stream failure as HTTP 500.
+				http.Error(w, "temporary notification stream failure", http.StatusInternalServerError)
+				return
+			}
+			if r.Header.Get("Last-Event-ID") != "idle-cursor" {
+				http.Error(w, "missing stream cursor", 400)
+				return
+			}
 			fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n")
 			w.(http.Flusher).Flush()
 			close(notificationSent)
@@ -197,6 +221,7 @@ func TestCredentialBridgeDeviceLoginAndStdio(t *testing.T) {
 	line, err = stdio.ReadString('\n')
 	require.NoError(t, err)
 	require.Contains(t, line, "notifications/tools/list_changed")
+	require.Equal(t, int32(3), streamConnections.Load(), "recover from an idle disconnect and HTTP 500 without exiting the stdio session")
 	_, err = io.WriteString(send, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{}}}`+"\n")
 	require.NoError(t, err)
 	line, err = stdio.ReadString('\n')

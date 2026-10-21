@@ -9,13 +9,18 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 const maxMessageBytes = 16 << 20
+
+var errSSERead = errors.New("MCP event stream read failed")
 
 // wireMessage only inspects transport state. The original bytes are forwarded
 // unchanged, including unknown capabilities, extensions, IDs, and metadata.
@@ -117,6 +122,11 @@ func (c *Client) Serve(ctx context.Context, input io.ReadCloser, output io.Write
 	case <-ctx.Done():
 		result = ctx.Err()
 	}
+	// Report before closing stdout: stdio supervisors may terminate the process
+	// on EOF, before main has a chance to print the returned error.
+	if result != nil && !errors.Is(result, context.Canceled) {
+		fmt.Fprintln(os.Stderr, result)
+	}
 	cancel()
 	input.Close()
 	output.Close()
@@ -190,7 +200,7 @@ func (r *relay) post(ctx context.Context, body []byte, message wireMessage) erro
 			return err
 		}
 		if _, err := r.write(data); err != nil {
-			return err
+			return fmt.Errorf("MCP %q response (HTTP %d): %w", message.Method, res.StatusCode, err)
 		}
 	} else if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("MCP POST returned HTTP %d", res.StatusCode)
@@ -296,7 +306,7 @@ func (r *relay) sse(reader io.Reader, responseID string) (string, bool, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return lastID, delivered, err
+		return lastID, delivered, fmt.Errorf("%w: %w", errSSERead, err)
 	}
 	if responseID != "" {
 		return lastID, delivered, errors.New("MCP response stream ended before its response; reconnect rather than replay the request")
@@ -306,7 +316,8 @@ func (r *relay) sse(reader io.Reader, responseID string) (string, bool, error) {
 
 func (r *relay) listen(ctx context.Context) error {
 	lastID := ""
-	for retry := 0; retry < 5; retry++ {
+	delay := time.Second
+	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.endpoint, nil)
 		if err != nil {
 			return err
@@ -316,37 +327,64 @@ func (r *relay) listen(ctx context.Context) error {
 		if lastID != "" {
 			req.Header.Set("Last-Event-ID", lastID)
 		}
+		opened := time.Now()
 		res, err := r.client.Do(req)
 		if err != nil {
-			return err
-		}
-		if res.StatusCode == http.StatusMethodNotAllowed {
-			res.Body.Close()
-			return nil
-		}
-		mediaType, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
-		if res.StatusCode != http.StatusOK || mediaType != "text/event-stream" {
-			res.Body.Close()
-			return fmt.Errorf("MCP notification stream returned HTTP %d or invalid content type", res.StatusCode)
-		}
-		id, delivered, err := r.sse(res.Body, "")
-		res.Body.Close()
-		if err != nil {
-			return err
-		}
-		if id != "" {
-			lastID = id
-		}
-		if delivered {
-			retry = -1
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, errCredentialAccess) {
+				return err
+			}
+			// Only retry transient transport failures. Authentication and
+			// keystore errors must still surface rather than looping forever.
+			var requestError *url.Error
+			if !errors.As(err, &requestError) {
+				return err
+			}
+			var transportError net.Error
+			if !errors.As(requestError.Err, &transportError) &&
+				!errors.Is(requestError.Err, io.EOF) && !errors.Is(requestError.Err, io.ErrUnexpectedEOF) {
+				return err
+			}
+		} else {
+			if res.StatusCode == http.StatusMethodNotAllowed {
+				res.Body.Close()
+				return nil
+			}
+			mediaType, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
+			transient := res.StatusCode == http.StatusTooManyRequests ||
+				res.StatusCode == http.StatusInternalServerError || res.StatusCode == http.StatusBadGateway ||
+				res.StatusCode == http.StatusServiceUnavailable || res.StatusCode == http.StatusGatewayTimeout
+			if !transient && (res.StatusCode != http.StatusOK || mediaType != "text/event-stream") {
+				res.Body.Close()
+				return fmt.Errorf("MCP notification stream returned HTTP %d or invalid content type", res.StatusCode)
+			}
+			if !transient {
+				id, delivered, streamErr := r.sse(res.Body, "")
+				if id != "" {
+					lastID = id
+				}
+				res.Body.Close()
+				if streamErr != nil && !errors.Is(streamErr, errSSERead) {
+					return streamErr
+				}
+				// An accepted idle stream may close without any JSON-RPC data.
+				// That is not a failed session or a reason to stop after N closes.
+				if delivered || time.Since(opened) >= 30*time.Second {
+					delay = time.Second
+				}
+			} else {
+				res.Body.Close()
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(delay):
 		}
+		delay = min(delay*2, 30*time.Second)
 	}
-	return errors.New("MCP notification stream repeatedly disconnected; reconnect the client")
 }
 
 func (r *relay) closeSession() {
