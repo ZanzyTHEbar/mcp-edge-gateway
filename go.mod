@@ -13,6 +13,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/tursodatabase/go-libsql v0.0.0-20260424063416-3051e37e6e04
 	golang.org/x/oauth2 v0.28.0
+	golang.org/x/sys v0.34.0
 )
 
 require (
@@ -49,7 +50,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

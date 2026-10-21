@@ -8,6 +8,7 @@ This repository is deployment-neutral. It does not include private rollout notes
 
 - `mcp-edge`: the public HTTP edge for MCP clients.
 - `mcp-control-plane`: the internal control plane for catalog, tenant, secret, and runtime reconciliation.
+- `mcp-edge-credential-bridge`: a local stdio bridge with tunnel-free device login and private, refreshable OAuth credentials.
 - SQLite/libSQL persistence with goose migrations and sqlc-generated data access.
 - OAuth metadata, registration, authorization, token, refresh, and introspection endpoints.
 - Subject-aware tenant routing and audit-event persistence.
@@ -81,6 +82,10 @@ See `docs/mcp-registration-client-rbac.md` for the current operator and client c
 - how Authentik groups map to service grants and edge scopes.
 
 ## Development
+
+For remote/headless clients that cannot complete a loopback OAuth callback, see
+[`docs/headless-client-bridge.md`](docs/headless-client-bridge.md). The bridge
+works with unmodified MCP clients, including OpenCode.
 
 Run the standard validation loop before committing changes:
 

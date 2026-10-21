@@ -627,6 +627,8 @@ func TestOAuthRegistrationAllowsDeviceOnlyClientWithoutRedirectURI(t *testing.T)
 	require.Equal(t, http.StatusCreated, res.Code)
 	var registration clientRegistrationResponse
 	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &registration))
+	require.NotNil(t, registration.RedirectURIs, "OAuth metadata arrays must encode as [] rather than null")
+	require.NotNil(t, registration.ResponseTypes, "OAuth metadata arrays must encode as [] rather than null")
 	require.Empty(t, registration.RedirectURIs)
 	require.Empty(t, registration.ResponseTypes)
 	require.ElementsMatch(t, []string{oauthGrantDeviceCode, oauthGrantRefreshToken}, registration.GrantTypes)
@@ -1029,6 +1031,9 @@ func TestOAuthDeviceAuthorizationPendingPoll(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	require.Equal(t, http.StatusBadRequest, res.Code)
 	require.Contains(t, res.Body.String(), "authorization_pending")
+	var pending map[string]any
+	require.NoError(t, json.Unmarshal(res.Body.Bytes(), &pending))
+	require.Equal(t, "authorization_pending", pending["error"], "standard OAuth clients require a string error field")
 
 	req = httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

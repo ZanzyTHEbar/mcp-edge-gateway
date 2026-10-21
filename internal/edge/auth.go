@@ -84,7 +84,6 @@ type oidcDelegatedAuthenticator struct {
 	provider    *oidc.Provider
 	verifier    *oidc.IDTokenVerifier
 	oauthConfig *oauth2.Config
-	initErr     error
 }
 
 type oidcIdentityClaims struct {
@@ -453,13 +452,8 @@ func (o *oidcDelegatedAuthenticator) ensureProvider(ctx context.Context) error {
 	if o.provider != nil {
 		return nil
 	}
-	if o.initErr != nil {
-		return o.initErr
-	}
-
 	provider, err := oidc.NewProvider(ctx, o.issuerURL)
 	if err != nil {
-		o.initErr = err
 		return err
 	}
 

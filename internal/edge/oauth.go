@@ -566,9 +566,9 @@ func (o *OAuthService) handleClientRegistration(w http.ResponseWriter, r *http.R
 		ClientIDIssuedAt:        record.CreatedAt.Unix(),
 		ClientSecretExpiresAt:   0,
 		ClientName:              record.Name,
-		RedirectURIs:            append([]string(nil), record.RedirectURIs...),
-		GrantTypes:              append([]string(nil), record.GrantTypes...),
-		ResponseTypes:           append([]string(nil), record.ResponseTypes...),
+		RedirectURIs:            append([]string{}, record.RedirectURIs...),
+		GrantTypes:              append([]string{}, record.GrantTypes...),
+		ResponseTypes:           append([]string{}, record.ResponseTypes...),
 		TokenEndpointAuthMethod: record.TokenEndpointAuthMethod,
 		Scope:                   strings.Join(record.Scopes, " "),
 	}
@@ -928,88 +928,90 @@ func (o *OAuthService) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *OAuthService) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	clientID, clientSecret, err := resolveClientCredentials(r)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	clientInfo, err := o.stateStore.GetByID(r.Context(), clientID)
 	if err != nil || !verifyClientSecretForTokenRequest(clientInfo, clientSecret) {
-		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	if !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) {
-		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for device_code grant")
+		writeOAuthError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for device_code grant")
 		return
 	}
 	deviceCode := strings.TrimSpace(r.Form.Get("device_code"))
 	if deviceCode == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
 		return
 	}
 	record, ok, err := o.stateStore.GetDeviceAuthorizationByDeviceCode(r.Context(), deviceCode)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "server_error", "unable to load device authorization")
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "unable to load device authorization")
 		return
 	}
 	if !ok || record.ClientID != clientID {
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
 		return
 	}
 	now := time.Now().UTC()
 	if !now.Before(record.ExpiresAt) || record.Status == deviceAuthorizationStatusExpired {
 		_, _ = o.stateStore.MarkExpiredDeviceAuthorizations(r.Context(), now)
-		writeJSONError(w, http.StatusBadRequest, "expired_token", "device_code has expired")
+		writeOAuthError(w, http.StatusBadRequest, "expired_token", "device_code has expired")
 		return
 	}
 	if record.LastPollAt != nil && now.Sub(*record.LastPollAt) < record.Interval {
 		_, _ = o.stateStore.SlowDownDeviceAuthorizationPoll(r.Context(), record.ID, now, 5*time.Second)
-		writeJSONError(w, http.StatusBadRequest, "slow_down", "device authorization polling is too frequent")
+		writeOAuthError(w, http.StatusBadRequest, "slow_down", "device authorization polling is too frequent")
 		return
 	}
 	_, _ = o.stateStore.UpdateDeviceAuthorizationPoll(r.Context(), record.ID, now)
 	switch record.Status {
 	case deviceAuthorizationStatusPending:
-		writeJSONError(w, http.StatusBadRequest, "authorization_pending", "device authorization is pending")
+		writeOAuthError(w, http.StatusBadRequest, "authorization_pending", "device authorization is pending")
 		return
 	case deviceAuthorizationStatusDenied:
-		writeJSONError(w, http.StatusBadRequest, "access_denied", "device authorization was denied")
+		writeOAuthError(w, http.StatusBadRequest, "access_denied", "device authorization was denied")
 		return
 	case deviceAuthorizationStatusConsumed:
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code has already been consumed")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code has already been consumed")
 		return
 	case deviceAuthorizationStatusApproved:
 	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code is invalid")
 		return
 	}
 	if record.SubjectSub == nil || strings.TrimSpace(*record.SubjectSub) == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device authorization has no approving subject")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device authorization has no approving subject")
 		return
 	}
 	if !clientAllowsScope(clientInfo, record.Scope) || !clientAllowsGrant(clientInfo, oauthGrantDeviceCode) {
-		writeJSONError(w, http.StatusBadRequest, "unauthorized_client", "client is no longer authorized for this device grant")
+		writeOAuthError(w, http.StatusBadRequest, "unauthorized_client", "client is no longer authorized for this device grant")
 		return
 	}
 	resolution, ok := o.directory.ResolveByID(record.ServiceID)
 	if !ok || record.Resource != resolution.Resource {
-		writeJSONError(w, http.StatusBadRequest, "invalid_resource", "device authorization resource is no longer valid")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_resource", "device authorization resource is no longer valid")
 		return
 	}
 	if o.grants != nil {
 		allowed, err := o.grants.AllowedScopes(r.Context(), *record.SubjectSub, record.Scope)
 		if err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "authorization_unavailable", "unable to validate subject service grants")
+			writeOAuthError(w, http.StatusServiceUnavailable, "server_error", "unable to validate subject service grants")
 			return
 		}
 		if !allowed {
-			writeJSONError(w, http.StatusForbidden, "service_not_granted", "requested scope is not granted for this subject")
+			writeOAuthError(w, http.StatusForbidden, "access_denied", "requested scope is not granted for this subject")
 			return
 		}
 	}
 	accessToken, err := randomToken(32)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "unable to issue access token")
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "unable to issue access token")
 		return
 	}
 	token := models.NewToken()
@@ -1025,7 +1027,7 @@ func (o *OAuthService) handleDeviceToken(w http.ResponseWriter, r *http.Request)
 	if clientAllowsGrant(clientInfo, oauthGrantRefreshToken) {
 		refreshToken, err = randomToken(32)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "unable to issue refresh token")
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "unable to issue refresh token")
 			return
 		}
 		token.SetRefresh(refreshToken)
@@ -1035,10 +1037,10 @@ func (o *OAuthService) handleDeviceToken(w http.ResponseWriter, r *http.Request)
 	consumed, err := o.stateStore.ConsumeDeviceAuthorizationAndCreateToken(r.Context(), record.ID, now, token)
 	if err != nil || !consumed {
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "token_store_failed", "unable to persist device token")
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "unable to persist device token")
 			return
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "device_code could not be consumed")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code could not be consumed")
 		return
 	}
 	o.recordAuditEvent(r.Context(), edgeAuditEvent{ActorSubjectSub: *record.SubjectSub, ServiceID: record.ServiceID, EventType: "oauth.device.token_issued", EventStatus: "issued", Payload: map[string]any{"client_id": clientID, "scope": record.Scope, "resource": record.Resource}})
@@ -1053,6 +1055,13 @@ func (o *OAuthService) handleDeviceToken(w http.ResponseWriter, r *http.Request)
 		response["refresh_token"] = refreshToken
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// Device polling clients depend on RFC 6749's string error field to decide
+// whether to keep waiting, slow down, or stop. The platform error envelope is
+// deliberately not used at this OAuth boundary.
+func writeOAuthError(w http.ResponseWriter, status int, code, description string) {
+	writeJSON(w, status, map[string]string{"error": code, "error_description": description})
 }
 
 type statusTrackingResponseWriter struct {
